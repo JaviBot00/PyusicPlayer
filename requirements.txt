@@ -1,0 +1,35 @@
+# PyusicPlayer Dependencies
+
+# Core
+pygame>=2.5.0
+mutagen>=1.47.0
+
+# TUI
+textual>=0.47.0
+
+# GUI
+customtkinter>=5.2.0
+
+# API Server
+fastapi>=0.109.0
+uvicorn>=0.27.0
+
+# Audio Spectrum
+numpy>=1.26.0
+
+# Lyrics
+httpx>=0.26.0
+
+# Download
+yt-dlp>=2024.1.0
+
+# i18n
+babel>=2.14.0
+
+# Database (stdlib)
+# sqlite3 is included with Python
+
+# Notifications (platform-specific)
+# Linux: notify-send (libnotify)
+# macOS: osascript
+# Windows: plyer or win10toast
