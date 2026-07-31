@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Project data
+data/
+downloads/
+
+# Audio files
+*.mp3
+*.ogg
+*.wav
+*.flac
+*.m4a
+*.aac
+*.opus
+
+# Secrets & config
+.env
+*.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# SQLite
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
