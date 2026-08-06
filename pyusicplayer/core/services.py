@@ -17,6 +17,12 @@ class PlayerService:
     back to the audio backend only if the track's own metadata is missing.
     """
 
+    #: previous_track() restarts the current track (seek to 0) instead of
+    #: actually moving to the prior track when playback position is beyond
+    #: this many seconds - mirrors the "double-tap previous" convention used
+    #: by most media players. Change freely; nothing else depends on 5.0.
+    PREVIOUS_TRACK_RESTART_THRESHOLD_SECONDS: float = 5.0
+
     def __init__(self, audio: AudioPort, metadata: MetadataPort):
         self._audio = audio
         self._metadata = metadata
@@ -106,6 +112,16 @@ class PlayerService:
         return track
 
     def previous_track(self) -> Optional[Track]:
+        """Go to the previous track, UNLESS we're more than
+        PREVIOUS_TRACK_RESTART_THRESHOLD_SECONDS into the current one, in
+        which case restart the current track instead (standard "double-tap
+        previous" behavior). Restarting does NOT fire on_track_change -
+        it's the same track, nothing new to display."""
+        current = self._playlist.current_track
+        if current is not None and self.get_position() > self.PREVIOUS_TRACK_RESTART_THRESHOLD_SECONDS:
+            self._audio.seek(0.0)
+            return current
+
         idx = self._playlist.previous_index()
         if idx < 0:
             return None
