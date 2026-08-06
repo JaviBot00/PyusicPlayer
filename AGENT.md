@@ -4,6 +4,14 @@
 
 An interactive music player built in Python that runs in both TUI (Terminal User Interface) and GUI (Graphical User Interface) modes, with an optional API server for web and Android clients.
 
+**Current reality check (read this before trusting anything below):** this
+document describes the full original vision. Only the TUI playback path and
+config persistence are actually implemented right now (see "Implementation
+Status" at the bottom, which is kept honest on purpose). Everything about
+GUI, API server, library DB, downloader, lyrics, visualizer, notifications,
+and i18n is still just plan, not code. Treat the sections above
+"Implementation Status" as target design, not a description of what exists.
+
 ## Core Features
 
 ### Player Controls
@@ -11,15 +19,27 @@ An interactive music player built in Python that runs in both TUI (Terminal User
 - Loop modes: single track, entire playlist, or random/shuffle
 - Skip forward/backward, next/previous track
 - Seek (advance/rewind within a song)
+- **"Double-tap previous"**: pressing Previous restarts the current track
+  from 0 if more than `PREVIOUS_TRACK_RESTART_THRESHOLD_SECONDS` (default
+  5.0s) have elapsed; only within that window does it actually go to the
+  prior track. Standard media-player convention.
 
 ### Media Display (Always Visible)
 - Player controls and progress bar
 - Current track info (title, artist, album)
+- **Cover art**: embedded album art shown fixed alongside the artist/title
+  block (placeholder if the file has none). NOT a toggleable alternate
+  view - it's always present, same as title/artist. Decided over the
+  original "cover as one of 3 alternating views" design because two
+  representations of the same image in a terminal UI is redundant and
+  wastes scarce space.
 
 ### Alternate Views (Independent Toggles)
 - **Lyrics**: Synchronized lyrics display (or message if not available)
-- **Cover Art**: Album art visualization (or placeholder if not available)
 - **Audio Spectrum Analyzer**: Real-time frequency visualization with 5 styles
+
+Cover art is intentionally NOT in this list anymore (see "Media Display"
+above) - only Lyrics and Visualizer remain as alternating views.
 
 ### Audio Spectrum Visualizer
 - 5 visualization styles:
@@ -39,9 +59,9 @@ An interactive music player built in Python that runs in both TUI (Terminal User
 ### Configuration
 - Customizable settings
 - Restore to defaults
-- Portable configuration (local JSON) + global (XDG compliant)
-- Layout configuration (side-by-side or stacked)
-- Alternate view toggles
+- Portable configuration (`./data/config.json`)
+- Layout configuration (side-by-side or stacked) — future phase
+- Alternate view toggles — future phase
 
 ### Download Support
 - Download audio from YouTube/SoundCloud/etc via yt-dlp
@@ -71,14 +91,14 @@ The core principle: **Never import concrete implementations in business logic. O
 │                    GOLDEN RULE                              │
 │  A module NEVER imports concrete implementations.           │
 │  It only imports PROTOCOLS (interfaces).                   │
-│  Connections are made in the ENTRY POINT (main.py).         │
+│  Connections are made in the ENTRY POINT (__main__.py).      │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ### Dependency Flow
 
 ```
-main.py (entry point)
+__main__.py (entry point)
     ↓
 container.py (dependency injection / wiring)
     ↓
@@ -93,12 +113,14 @@ adapters (implementations) → ports (implements the contract)
 
 | Pattern | Location | Purpose |
 |---------|----------|---------|
-| **Strategy** | playlist_service.py | Switch between sequential/shuffle/loop without if/else |
-| **Observer** | player_service.py | Notify UI and notifications on state change |
-| **Factory** | container.py | Create adapters based on config/OS |
-| **Adapter** | adapters/* | Wrap external libraries behind interfaces |
-| **Repository** | library SQLite | Data access abstraction |
-| **Template Method** | visualizer/base.py | Base FFT processing with style-specific render |
+| **Strategy** | core/models.py (Playlist) | Switch between sequential/shuffle/loop without if/else |
+| **Observer** | core/services.py (PlayerService) | Notify UI on playback state/track change via `on_state_change`/`on_track_change` callbacks |
+| **Factory** | di/container.py | Build and wire concrete adapters behind ports |
+| **Adapter** | adapters/* | Wrap external libraries (pygame, mutagen) behind interfaces |
+
+The Repository (library SQLite) and Template Method (visualizer FFT) patterns
+listed in earlier drafts of this doc apply to features that are not built
+yet - removed from this table until real code exists to point at.
 
 ## Technology Stack
 
@@ -110,7 +132,7 @@ adapters (implementations) → ports (implements the contract)
 | Metadata | mutagen + EasyID3 | Multi-format, actively maintained |
 | Lyrics | LRCLIB API + local .lrc files | Free, offline fallback |
 | Visualizer | numpy (FFT) | Fast numerical processing |
-| Config | JSON files | Portable + global |
+| Config | JSON (`./data/config.json`) | Portable, human-readable, zero extra deps |
 | i18n | gettext + Babel | Industry standard, ES/EN |
 
 ### Interfaces
@@ -125,88 +147,85 @@ adapters (implementations) → ports (implements the contract)
 
 | Component | Technology | Rationale |
 |-----------|------------|-----------|
-| Database | SQLite | Portable, no server needed |
+| Database | SQLite (`./data/library.db`) | Portable, no server needed |
 | Downloads | yt-dlp + ffmpeg | Best quality, opus format |
 | Notifications | Native (notify-send/osascript) | Zero dependencies |
+| Testing | pytest + pytest-asyncio | Real fixtures over mocks where feasible; see Testing section below |
 
 ### Audio Formats Supported
 
 - **Primary**: Opus (download format)
-- **Supported**: MP3, OGG, WAV, FLAC, M4A, AAC
-- All formats supported by pygame/VLC
+- **Supported**: MP3, OGG, WAV, FLAC, M4A, AAC, WMA
+- All formats supported by pygame/VLC. Metadata tag extraction (not just
+  duration) is currently implemented for MP3/FLAC/OGG/Opus/M4A; WAV and WMA
+  only report duration (see adapters/metadata/mutagen_adapter.py docstring
+  for why).
 
 ## Project Structure
 
 ```
 PyusicPlayer/
-├── main.py                        # Legacy entry point (to be replaced)
 ├── pyusicplayer/
 │   ├── __init__.py                # Package init with version
-│   ├── __main__.py                # Entry point (--tui, --gui, --server)
+│   ├── __main__.py                # Entry point (--tui implemented; --gui/--server exit with a clear "not implemented" message)
 │   │
 │   ├── core/                      # Business logic (NO dependencies)
 │   │   ├── __init__.py
-│   │   ├── models.py              # Track, Playlist, PlaylistMode
-│   │   ├── services.py            # PlayerService, LibraryService
+│   │   ├── models.py              # Track, Playlist, PlaylistMode (Fisher-Yates shuffle)
+│   │   ├── services.py            # PlayerService
 │   │   └── ports/                 # Protocol interfaces
-│   │       ├── __init__.py
-│   │       ├── audio.py           # AudioPort Protocol
-│   │       ├── metadata.py        # MetadataPort Protocol
-│   │       ├── lyrics.py          # LyricsPort Protocol
-│   │       ├── notifications.py   # NotificationsPort Protocol
-│   │       ├── config.py          # ConfigPort Protocol
-│   │       ├── library.py         # LibraryPort Protocol
-│   │       ├── downloader.py      # DownloaderPort Protocol
-│   │       └── visualizer.py      # VisualizerPort Protocol
+│   │       ├── __init__.py        # Exports AudioPort + MetadataPort (the only ones previously wired); ConfigPort now also wired
+│   │       ├── audio.py           # AudioPort Protocol (implemented)
+│   │       ├── metadata.py        # MetadataPort Protocol (implemented)
+│   │       ├── config.py          # ConfigPort Protocol + AppConfig dataclass (implemented)
+│   │       ├── library.py         # LibraryPort Protocol (defined, no adapter, not wired)
+│   │       ├── lyrics.py          # LyricsPort Protocol (defined, no adapter, not wired)
+│   │       ├── notifications.py   # NotificationsPort Protocol (defined, no adapter, not wired)
+│   │       ├── downloader.py      # DownloaderPort Protocol (defined, no adapter, not wired)
+│   │       └── visualizer.py      # VisualizerPort Protocol (defined, no adapter, not wired)
 │   │
 │   ├── adapters/                  # Concrete implementations
 │   │   ├── __init__.py
 │   │   ├── audio/
 │   │   │   ├── __init__.py
-│   │   │   └── pygame_adapter.py  # Pygame audio backend
+│   │   │   └── pygame_adapter.py  # Real pygame backend: seek, position tracking, track-end detection all verified against real audio (see module docstring for the empirically-found quirks)
 │   │   ├── metadata/
 │   │   │   ├── __init__.py
-│   │   │   └── mutagen_adapter.py # Mutagen metadata reader
-│   │   ├── lyrics/
-│   │   │   ├── __init__.py
-│   │   │   └── (to be implemented)
-│   │   ├── notifications/
-│   │   │   ├── __init__.py
-│   │   │   └── (to be implemented)
+│   │   │   └── mutagen_adapter.py # Mutagen reader: MP3/FLAC/OGG/Opus/M4A full tags, WAV/WMA duration-only
 │   │   ├── config/
 │   │   │   ├── __init__.py
-│   │   │   └── (to be implemented)
-│   │   ├── library/
-│   │   │   ├── __init__.py
-│   │   │   └── (to be implemented)
-│   │   ├── downloader/
-│   │   │   ├── __init__.py
-│   │   │   └── (to be implemented)
-│   │   └── visualizer/
-│   │       ├── __init__.py
-│   │       └── (to be implemented)
+│   │   │   └── json_adapter.py    # JsonConfigAdapter: load/save AppConfig to ./data/config.json, atomic write via os.replace()
+│   │   ├── library/               # empty stub, future phase
+│   │   ├── lyrics/                # empty stub, future phase
+│   │   ├── notifications/         # empty stub, future phase
+│   │   ├── downloader/            # empty stub, future phase
+│   │   └── visualizer/            # empty stub, future phase
 │   │
 │   ├── interfaces/                # UI layer
 │   │   ├── __init__.py
-│   │   ├── tui/                   # Textual TUI
-│   │   │   └── __init__.py
-│   │   └── gui/                   # CustomTkinter GUI
-│   │       └── __init__.py
+│   │   ├── tui/
+│   │   │   ├── __init__.py
+│   │   │   └── app.py             # Textual TUI: play/pause/stop/next/prev/seek/volume, now-playing highlight, mode/shuffle indicator bar
+│   │   └── gui/                   # empty stub, future phase
 │   │
-│   ├── di/                        # Dependency Injection
-│   │   ├── __init__.py
-│   │   └── container.py           # Container with register/resolve
-│   │
-│   └── i18n/                      # Internationalization
-│       └── __init__.py            # setup_i18n(), get_translation()
+│   └── di/
+│       ├── __init__.py
+│       └── container.py           # Container with register/resolve; create_container() wires AudioPort, MetadataPort, ConfigPort. DATA_DIR = ./data/
 │
-├── data/                          # Portable data (gitignored)
-│   ├── config.json
-│   └── library.db
+├── tests/                         # pytest suite - see "Testing" section below
+│   ├── conftest.py                # audio_fixtures (ffmpeg-generated), container fixtures
+│   ├── core/                      # fast, no-I/O unit tests (models, services w/ fakes)
+│   ├── adapters/                  # real pygame/mutagen/config tests
+│   ├── di/                        # container wiring tests
+│   └── interfaces/                # Textual App.run_test() integration tests
 │
-├── i18n/                          # Translation files
-│   ├── es.po
-│   └── en.po
+├── data/                          # Runtime-generated, gitignored
+│   ├── config.json                # Persistent config (volume, repeat_mode, shuffle, last_playlist_path)
+│   └── library.db                 # SQLite library — future phase
+│
+├── pytest.ini
+├── requirements.txt                # runtime deps
+├── requirements-dev.txt            # pytest + pytest-asyncio
 │
 ├── music/                         # Sample music files
 │
@@ -219,40 +238,41 @@ PyusicPlayer/
 └── INDEX.md
 ```
 
+Note: there is no `main.py` at the project root. An earlier draft of this
+doc called it "legacy entry point (to be replaced)" - it has since been
+removed entirely. The only entry point is `python -m pyusicplayer`.
+
 ## Keyboard Shortcuts
 
-### Playback
+### Playback (implemented)
 - `Space` - Play/Pause
 - `S` - Stop
 - `N` - Next track
 - `P` - Previous track
 - `←/→` - Seek backward/forward
 - `↑/↓` - Volume up/down
-- `M` - Mute
 
-### Playback Modes
+### Playback Modes (implemented)
 - `1` - Sequential
 - `L` - Loop one
-- `Shift+L` - Loop all
+- `L` (uppercase, i.e. Shift+L on the physical key) - Loop all
 - `R` - Shuffle
 
-### Alternate Views (Independent Toggles)
-- `Y` - Toggle Lyrics on/off
-- `C` - Toggle Cover on/off
-- `V` - Toggle Visualizer on/off
+Note: the binding for loop-all is declared as `"L"` (uppercase), not
+`"shift+l"`. Bug found in production: terminals send uppercase letters as
+the character `L`, not as a `shift+l` modifier combination, so Textual
+never matched the old `"shift+l"` binding - it was dead code. Regression
+test drives this through `pilot.press("L")`, not by calling the action
+method directly, so it can't pass while the binding itself is broken.
 
-### Visualizer
-- `Ctrl+V` - Cycle visualizer style (5 styles)
-
-### Layout
-- `Shift+L` - Cycle layout (side_by_side / stacked)
-
-### Utilities
+### Not implemented yet (documented for future phases)
+- `M` - Mute
+- `Y` / `V` - Toggle Lyrics/Visualizer (cover art is always visible, not a toggle - see "Media Display" above)
+- `Ctrl+V` - Cycle visualizer style
 - `F1` or `?` - Help
 - `/` - Search library
-- `Q` - Quit
 
-## API Endpoints (FastAPI)
+## API Endpoints (FastAPI) — NOT IMPLEMENTED, future phase
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -263,7 +283,7 @@ PyusicPlayer/
 | GET | `/api/search?q=` | Search songs |
 | POST | `/api/download` | Download audio from URL |
 
-## Database Schema (SQLite)
+## Database Schema (SQLite) — NOT IMPLEMENTED, future phase
 
 ```sql
 CREATE TABLE collections (
@@ -299,84 +319,146 @@ CREATE TABLE songs (
 );
 ```
 
-## Configuration Schema
+## Configuration Schema — IMPLEMENTED
+
+Config is persisted to `./data/config.json`. Phase 1 fields only:
 
 ```json
 {
-  "version": 1,
-  "player": {
-    "volume": 80,
-    "loop_mode": "none",
-    "shuffle": false
-  },
-  "alternate_views": {
-    "lyrics_enabled": false,
-    "cover_enabled": false,
-    "visualizer_enabled": false,
-    "visualizer_style": "BARS_VERTICAL"
-  },
-  "layout": {
-    "mode": "side_by_side",
-    "alternate_position": "right",
-    "split_ratio": 60
-  },
-  "visualizer": {
-    "num_bars": 32,
-    "smoothing": 0.3,
-    "sensitivity": 1.0,
-    "peak_hold": true
-  }
+  "volume": 0.7,
+  "repeat_mode": "none",
+  "shuffle": false,
+  "last_playlist_path": null
 }
 ```
+
+`AppConfig` dataclass lives in `core/ports/config.py`. The adapter
+(`JsonConfigAdapter`) writes atomically via `os.replace()` on a `.tmp`
+sibling. Unknown keys in the file are silently ignored (forward-compat).
+Out-of-range volume is clamped to [0.0, 1.0] on load.
+
+Future fields (layout, visualizer style, alternate views, etc.) will be
+added to `AppConfig` when those phases are implemented.
 
 ## Key Decisions
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | Audio format | Opus (downloads) | Best quality/size ratio, document alternatives |
-| Database location | Portable (`./data/library.db`) | Full portability |
+| Data directory | `./data/` (portable) | All runtime-generated files in one place; gitignored |
+| Config file | `./data/config.json` | Human-readable, zero deps, atomic write via os.replace() |
+| Database location | `./data/library.db` | Consistent with config location |
 | API framework | FastAPI | Streaming + community + simplicity |
 | Frontend | GUI + TUI + API | Full coverage |
-| Config | Portable + global XDG | Best of both worlds |
 | Lyrics | LRCLIB + local .lrc | Free + offline fallback |
 | Visualizer | numpy FFT | Fast numerical processing |
 | Visualizer styles | 5 styles | Full customization from start |
 | i18n | gettext + Babel | Industry standard |
+| Duration source | Track.duration (metadata), not AudioPort.get_duration() | pygame cannot report duration reliably for every format; AudioPort.get_duration() is a documented fallback stub only |
+| Seek mechanism (pygame) | reload + `play(start=X)` | `pygame.mixer.music.set_pos()` was verified to be a silent no-op in this environment for mp3/ogg/wav |
+| Test-first workflow | pytest, real audio fixtures over mocks where feasible | Two real bugs (pause double-counting, stop() firing a spurious end-event) were only caught this way - see Testing section |
+| Previous-track restart threshold | 5.0s, `PlayerService.PREVIOUS_TRACK_RESTART_THRESHOLD_SECONDS` | Named constant, not a magic number, so it's trivial to retune later without hunting through the codebase |
+| Shuffle bag exhaustion vs `mode` | shuffle only changes order; `mode` alone decides stop/loop-one/loop-all at bag exhaustion | Bug found in production: shuffle was implicitly looping forever regardless of `mode=NONE`. Fixed with a `_shuffle_bag_initialized` flag to distinguish "never filled" (first advance, must still play something) from "exhausted after a full cycle" (must stop unless `mode=ALL`) |
 
 ## Important Notes
 
-- **Architecture over playability**: Prioritize perfect architecture over something playable
+- **Architecture over playability**: Prioritize perfect architecture over something playable — in practice this produced a fully-designed skeleton with zero working adapters at one point; the current codebase corrects that by keeping ports/adapters minimal but real and working end-to-end before adding more surface area.
 - **Modular design**: Any component should be swappable without breaking others
-- **Cross-platform**: Linux, Windows, macOS support
-- **Notifications**: Pop-up notifications when player window is not focused
-- **GUI as background process**: No terminal window required
-- **Alternate views**: Independent toggles (Y=Lyrics, C=Cover, V=Visualizer)
-- **Layout configurable**: Side-by-side or stacked, changeable via settings/shortcuts
+- **Cross-platform**: Linux, Windows, macOS support (only tested on Linux so far)
+- **Notifications**: planned, not implemented
+- **GUI as background process**: planned, not implemented
+- **Alternate views**: planned, not implemented
+- **Layout configurable**: planned, not implemented
+
+## Testing
+
+Tests live under `tests/`, mirroring the `pyusicplayer/` package layout.
+
+**Workflow going forward: write the test first, watch it fail for the right
+reason, then write the code that makes it pass.** This isn't retroactive
+busywork - it already found a real bug during this project's own test-writing
+pass (`pygame.mixer.music.stop()` fires the same end-of-track event as
+natural completion, which would have made the Stop key spuriously
+auto-advance to the next track; the test written for the "does NOT fire on
+explicit stop" case caught it before it shipped).
+
+### Running tests
+
+```bash
+pip install -r requirements-dev.txt
+
+# Full suite
+pytest
+
+# Fast loop while developing (skips real pygame/mutagen audio tests)
+pytest -m "not audio"
+
+# Just one layer
+pytest tests/core/
+```
+
+### Layout and philosophy
+
+| Layer | What it tests | Real I/O? |
+|-------|---------------|-----------|
+| `tests/core/test_models.py` | `Track`, `Playlist` (Fisher-Yates shuffle, sequential/loop modes) | No - pure logic |
+| `tests/core/test_services.py` | `PlayerService` against `FakeAudioPort`/`FakeMetadataPort` test doubles | No - fast, in-memory |
+| `tests/adapters/test_pygame_adapter.py` | Real `pygame.mixer.music` against ffmpeg-generated audio: seek, position tracking, pause/resume drift, track-end detection | Yes - real (headless/dummy-driver) pygame |
+| `tests/adapters/test_mutagen_adapter.py` | Real `mutagen` extraction across every supported format | Yes - real files |
+| `tests/adapters/test_config_adapter.py` | `JsonConfigAdapter`: load/save/defaults/corruption/clamping/atomicity | No - tmp_path only |
+| `tests/di/test_container.py` | `create_container()` actually wires adapters (this is what was broken before: an empty container that resolved nothing) | No |
+| `tests/interfaces/test_tui_app.py` | Full Textual `App.run_test()` harness: playlist loading, now-playing highlight, mode bar, pause/resume regression at the app level | Yes - real pygame + real Textual event loop |
+| `tests/interfaces/test_tui_config.py` | TUI restores volume/shuffle/repeat_mode from `ConfigPort` on mount, persists them on unmount; falls back to defaults if no config file | No - tmp_path only, empty playlist folder (no audio needed) |
+
+`tests/core/test_models.py::TestPlaylistShuffleRespectsMode` and
+`tests/interfaces/test_tui_app.py::test_loop_all_keybinding_actually_triggers_via_keypress`
+are the regression tests for the two bugs above - both were written first,
+confirmed red for the right reason, then fixed.
+
+Audio-backed tests are marked `@pytest.mark.audio` (or module-level
+`pytestmark = pytest.mark.audio`) and are skipped, not failed, if `ffmpeg`
+isn't on `PATH` - fixture generation happens once per test session in
+`tests/conftest.py::audio_fixtures`, not from committed binary files.
+
+### What isn't covered yet
+
+No tests exist for the empty adapter stubs (lyrics/notifications/library/
+downloader/visualizer) or the GUI/API interfaces, because none of that code
+exists yet either. When those get implemented, tests are written first, per
+the workflow above - not bundled in afterward.
 
 ## Implementation Status
 
-### Completed
-- [x] Port protocols defined (Audio, Metadata, Lyrics, Notifications, Config, Library, Downloader, Visualizer)
-- [x] Core domain models (Track, Playlist, PlaylistMode)
-- [x] Core services (PlayerService, LibraryService)
-- [x] DI Container implementation
-- [x] Pygame audio adapter (basic)
-- [x] Mutagen metadata adapter (extraction)
-- [x] Package structure created
-- [x] Entry point with CLI arguments
+### Completed and tested
+- [x] Core domain models: `Track`, `Playlist` with Fisher-Yates shuffle bag, sequential/loop-one/loop-all modes
+- [x] `PlayerService`: playback orchestration, duration-from-metadata (not audio backend), auto-advance on track end, seek clamping, volume clamping, double-tap-previous restart threshold
+- [x] `Playlist.next_index()`: shuffle bag exhaustion now correctly respects `mode` (stop on NONE, refill+loop on ALL) instead of always looping regardless of mode
+- [x] `AudioPort` + `MetadataPort` + `ConfigPort` protocols
+- [x] `PygameAudioAdapter`: real seek (reload+`play(start=X)`, since `set_pos()` doesn't work), position tracking, pause/resume without double-counting, track-end detection without false positives on explicit stop
+- [x] `MutagenMetadataAdapter`: full tag extraction for MP3/FLAC/OGG/Opus/M4A, duration-only for WAV/WMA, no silent failures
+- [x] `JsonConfigAdapter`: load/save `AppConfig` to `./data/config.json`, atomic write, defaults on missing/corrupt file, volume clamping, forward-compat unknown-key tolerance — 11 tests
+- [x] TUI reads/writes config on startup/exit: volume/shuffle/repeat_mode restored in `on_mount`, persisted in `on_unmount` — 8 tests
+- [x] `Container`/`create_container()`: wires AudioPort, MetadataPort, ConfigPort
+- [x] TUI (`interfaces/tui/app.py`, Textual): playlist from folder scan, play/pause/stop/next/prev/seek/volume, now-playing highlight, mode/shuffle indicator bar
+- [x] `python -m pyusicplayer --tui` entry point; `--gui`/`--server` exit with an explicit "not implemented" message instead of crashing
+- [x] Test suite: 108 tests across core/adapters/di/interfaces layers
 
-### In Progress
-- [ ] Implement remaining adapters (Config, Library, Lyrics, Notifications, Visualizer, Downloader)
-- [ ] Implement TUI interface (Textual)
-- [ ] Implement GUI interface (CustomTkinter)
-- [ ] Implement FastAPI server
-- [ ] Create i18n translations
+### Not started (planned, no code, no adapters, no wiring)
+- [ ] SQLite library adapter
+- [ ] Lyrics adapter (LRCLIB + local .lrc)
+- [ ] Notifications adapter
+- [ ] Visualizer (FFT, 5 styles)
+- [ ] Downloader (yt-dlp)
+- [ ] GUI (CustomTkinter)
+- [ ] FastAPI server
+- [ ] i18n translations
 
-### Next Steps
-1. Implement SQLite library adapter
-2. Implement JSON config adapter
-3. Implement LRCLIB lyrics adapter
-4. Implement platform-specific notifications
-5. Implement visualizer with FFT processing
-6. Create TUI interface with Textual
-7. Create GUI interface with CustomTkinter
+### Next steps (in the order they'll likely be tackled)
+1. SQLite library adapter — test-first
+2. Cover art extraction (mutagen embedded APIC/covr) + fixed display in the artist/title block — test-first
+3. Visualizer (FFT) — test-first
+4. Lyrics adapter — test-first
+5. Notifications adapter — test-first
+6. GUI (CustomTkinter) — test-first
+7. FastAPI server — test-first
+8. i18n translations

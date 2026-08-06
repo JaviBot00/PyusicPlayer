@@ -2,6 +2,16 @@
 
 Un reproductor de música interactivo escrito en Python, con interfaz TUI (Terminal) y GUI (Gráfica), más un servidor API para clientes Web y Android.
 
+> **Estado real del proyecto:** de todo lo descrito en este documento, solo
+> la reproducción por TUI está implementada y probada hoy. GUI, API, base
+> de datos de biblioteca, letras, visualizador, notificaciones, descargas,
+> i18n y persistencia de configuración son diseño objetivo, no código
+> existente. El detalle exacto de qué está hecho vive en
+> [AGENT.md](AGENT.md#implementation-status), que se mantiene actualizado
+> a propósito para no repetir el problema que tenía esta documentación
+> antes (afirmar cosas como completadas que en realidad eran solo un
+> esqueleto sin conectar).
+
 ## Características
 
 - **Reproducción**: Play, pausa, reanudar, parar, seek
@@ -24,55 +34,60 @@ Un reproductor de música interactivo escrito en Python, con interfaz TUI (Termi
 - **Portable**: Configuración y base de datos en la carpeta del proyecto
 - **Multiplataforma**: Linux, Windows, macOS
 
+_(Lista de características objetivo completa. Ver arriba qué está realmente implementado.)_
+
 ## Instalación
 
 ### Requisitos
 
 - Python 3.10+
-- ffmpeg (para descargas y conversión de audio)
+- ffmpeg (necesario también para generar los fixtures de audio de los tests)
 
 ### Dependencias
 
 ```bash
 pip install -r requirements.txt
-```
 
-### Archivos de audio necesarios
-
-```bash
-# Opcional: VLC como backend alternativo
-pip install python-vlc
+# Solo si vas a correr los tests o a contribuir código:
+pip install -r requirements-dev.txt
 ```
 
 ## Uso
 
-### Modo TUI (Terminal)
+### Modo TUI (Terminal) — funcional hoy
 
 ```bash
-python main.py --tui
+python -m pyusicplayer --tui
+python -m pyusicplayer --music-dir /ruta/a/tu/musica --tui
 ```
 
-### Modo GUI (Escritorio)
+### Modo GUI / Servidor API — no implementados todavía
 
 ```bash
-python main.py --gui
+python -m pyusicplayer --gui     # termina con mensaje "not implemented"
+python -m pyusicplayer --server  # termina con mensaje "not implemented"
 ```
 
-### Modo Servidor (API)
+## Tests
 
 ```bash
-python main.py --server --port 8000
+pip install -r requirements-dev.txt
+
+pytest                  # suite completa
+pytest -m "not audio"   # ciclo rápido: sin pygame/mutagen reales
+pytest tests/core/      # solo una capa
 ```
 
-### Combinado (GUI + API)
-
-```bash
-python main.py --gui --api
-```
+Los tests de audio real (`@pytest.mark.audio`) generan sus propios ficheros
+de prueba con `ffmpeg` al arrancar la sesión de tests (`tests/conftest.py`);
+si no tienes `ffmpeg` instalado, esos tests se saltan con un aviso claro en
+vez de fallar. Ver la sección "Testing" de [AGENT.md](AGENT.md#testing) para
+el detalle de qué cubre cada capa y por qué (incluye dos bugs reales que
+solo se encontraron escribiendo tests, no probando a mano).
 
 ## Atajos de Teclado
 
-### Reproducción
+### Reproducción (implementado)
 
 | Tecla | Acción |
 |-------|--------|
@@ -80,11 +95,10 @@ python main.py --gui --api
 | `S` | Parar |
 | `N` | Siguiente canción |
 | `P` | Canción anterior |
-| `←/→` | Retroceder/Avanzar |
+| `←/→` | Retroceder/Avanzar (±5s) |
 | `↑/↓` | Volumen arriba/abajo |
-| `M` | Silenciar |
 
-### Modos de Reproducción
+### Modos de Reproducción (implementado)
 
 | Tecla | Acción |
 |-------|--------|
@@ -93,76 +107,47 @@ python main.py --gui --api
 | `Shift+L` | Bucle completo |
 | `R` | Aleatorio |
 
-### Vistas Alternas (On/Off independiente)
+### Pendiente (diseño futuro, sin implementar)
 
 | Tecla | Acción |
 |-------|--------|
-| `Y` | Mostrar/ocultar Letras |
-| `C` | Mostrar/ocultar Portada |
-| `V` | Mostrar/ocultar Visualizador |
-
-### Visualizador
-
-| Tecla | Acción |
-|-------|--------|
-| `Ctrl+V` | Cambiar estilo de visualización (5 estilos) |
-
-### Layout
-
-| Tecla | Acción |
-|-------|--------|
-| `Shift+L` | Cambiar layout (lado a lado / apilado) |
-
-### Utilidades
-
-| Tecla | Acción |
-|-------|--------|
+| `M` | Silenciar |
+| `Y` / `C` / `V` | Letras / Portada / Visualizador |
+| `Ctrl+V` | Cambiar estilo de visualización |
 | `F1` o `?` | Ayuda |
 | `/` | Buscar en biblioteca |
-| `Q` | Salir |
 
 ## Estructura del Proyecto
 
 ```
 PyusicPlayer/
-├── main.py                    # Punto de entrada
 ├── pyusicplayer/
-│   ├── core/                  # Lógica de negocio (sin dependencias externas)
-│   │   ├── ports/             # Interfaces (Protocol classes)
-│   │   ├── domain/            # Modelos de datos
-│   │   └── services/          # Lógica de negocio
-│   ├── adapters/              # Implementaciones concretas
-│   │   ├── audio/             # Backends de audio (pygame, vlc)
-│   │   ├── metadata/          # Lectores de metadatos (mutagen)
-│   │   ├── lyrics/            # Proveedores de letras (LRCLIB, local)
-│   │   ├── notifications/     # Notificaciones del sistema
-│   │   ├── config/            # Configuración
-│   │   ├── library/           # Indexación SQLite
-│   │   ├── downloader/        # Descargas yt-dlp
-│   │   └── visualizer/        # Visualizadores de spectrum (5 estilos)
-│   ├── interfaces/            # Capa de UI
-│   │   ├── tui/               # Interfaz de terminal (Textual)
-│   │   │   ├── screens/       # ModalScreen de ayuda
-│   │   │   └── widgets/       # Widgets de vistas alternas
-│   │   ├── gui/               # Interfaz gráfica (CustomTkinter)
-│   │   │   ├── widgets/       # Frames de vistas alternas
-│   │   │   └── menus/         # Menú de ayuda
-│   │   └── api/               # Servidor FastAPI
-│   ├── i18n/                  # Internacionalización
-│   └── di/                    # Inyección de dependencias
-├── data/                      # Datos portables (gitignored)
-│   ├── config.json
-│   └── library.db
-├── assets/
-│   └── placeholder.png
-├── CONCEPT.md                 # Concepto original
-├── AGENT.md                   # Contexto del agente
-├── SPEC.md                    # Especificación técnica
-├── README.md                  # Esta documentación (ES)
-├── README_EN.md               # Documentación (EN)
-├── INDEX.md                   # Índice de documentación
-├── LEARNING.md                # Guía de aprendizaje (ES)
-└── LICENSE
+│   ├── __main__.py             # Punto de entrada (--tui funcional; --gui/--server avisan que faltan)
+│   ├── core/                   # Lógica de negocio (sin dependencias externas)
+│   │   ├── models.py           # Track, Playlist (shuffle Fisher-Yates)
+│   │   ├── services.py         # PlayerService
+│   │   └── ports/              # Protocol interfaces (solo Audio/Metadata tienen adapter real)
+│   ├── adapters/
+│   │   ├── audio/pygame_adapter.py       # Implementado y probado
+│   │   ├── metadata/mutagen_adapter.py   # Implementado y probado
+│   │   ├── lyrics/ notifications/ config/ library/ downloader/ visualizer/  # stubs vacíos, fases futuras
+│   ├── interfaces/
+│   │   ├── tui/app.py          # Implementado y probado (Textual)
+│   │   └── gui/                # stub vacío, fase futura
+│   └── di/container.py         # Wiring real de los dos adapters implementados
+│
+├── tests/                      # pytest: core/ (rápidos, sin I/O) + adapters/di/interfaces/ (audio real vía ffmpeg)
+├── pytest.ini
+├── requirements.txt             # dependencias de ejecución
+├── requirements-dev.txt         # pytest + pytest-asyncio
+│
+├── music/                       # Música de ejemplo
+├── CONCEPT.md                   # Concepto original (visión completa)
+├── AGENT.md                     # Contexto para agentes IA — estado real actualizado aquí
+├── SPEC.md                      # Especificación técnica completa (visión, no todo implementado)
+├── README.md / README_EN.md
+├── INDEX.md
+└── LEARNING.md
 ```
 
 ## Arquitectura
@@ -178,62 +163,37 @@ El proyecto sigue el patrón **Ports & Adapters** (Arquitectura Hexagonal):
 
 > Un módulo NUNCA importa implementaciones concretas.
 > Solo importa PROTOCOLOS (interfaces).
-> La conexión se hace en el ENTRY POINT (main.py).
+> La conexión se hace en el ENTRY POINT (`__main__.py`).
 
 ## Tecnologías
 
-| Componente | Tecnología | Propósito |
-|------------|------------|-----------|
-| Audio | pygame / VLC | Reproducción de audio |
-| Metadatos | mutagen | Lectura de tags ID3 |
-| TUI | Textual | Interfaz de terminal moderna |
-| GUI | CustomTkinter | Interfaz gráfica de escritorio |
-| API | FastAPI | Servidor de streaming |
-| BD | SQLite | Indexación de biblioteca |
-| Descargas | yt-dlp | Descarga de audio |
-| Visualizer | numpy (FFT) | Procesamiento numérico |
-| i18n | gettext + Babel | Internacionalización |
+| Componente | Tecnología | Estado |
+|------------|------------|--------|
+| Audio | pygame | Implementado |
+| Metadatos | mutagen | Implementado |
+| TUI | Textual | Implementado |
+| Tests | pytest + pytest-asyncio | Implementado |
+| GUI | CustomTkinter | Planeado |
+| API | FastAPI | Planeado |
+| BD | SQLite | Planeado |
+| Descargas | yt-dlp | Planeado |
+| Visualizer | numpy (FFT) | Planeado |
+| i18n | gettext + Babel | Planeado |
 
 ## Formatos de Audio Soportados
 
-- **Principal**: Opus (para descargas)
-- **Soportados**: MP3, OGG, WAV, FLAC, M4A, AAC
-- Todos los formatos soportados por pygame/VLC
+- **Reproducción**: MP3, OGG, WAV, FLAC, M4A, WMA — todos vía pygame
+- **Metadatos completos** (título/artista/álbum/pista): MP3, FLAC, OGG, Opus, M4A
+- **Solo duración** (sin tags): WAV, WMA — ver el docstring de
+  `adapters/metadata/mutagen_adapter.py` para el motivo
 
 ## Configuración
 
-La configuración se almacena en dos ubicaciones:
+**No implementado todavía.** El volumen, modo de reproducción, shuffle y
+última playlist se reinician a sus valores por defecto en cada ejecución.
+Está planeado junto al adapter de biblioteca SQLite (ver AGENT.md).
 
-1. **Portable**: `./data/config.json` (junto al proyecto)
-2. **Global**: `~/.config/pyusicplayer/config.json` (estándar XDG)
-
-La configuración portable tiene prioridad sobre la global.
-
-### Opciones de Visualización
-
-```json
-{
-  "alternate_views": {
-    "lyrics_enabled": false,
-    "cover_enabled": false,
-    "visualizer_enabled": false,
-    "visualizer_style": "BARS_VERTICAL"
-  },
-  "layout": {
-    "mode": "side_by_side",
-    "alternate_position": "right",
-    "split_ratio": 60
-  },
-  "visualizer": {
-    "num_bars": 32,
-    "smoothing": 0.3,
-    "sensitivity": 1.0,
-    "peak_hold": true
-  }
-}
-```
-
-## API Endpoints
+## API Endpoints — no implementado, diseño futuro
 
 | Método | Endpoint | Descripción |
 |--------|----------|-------------|
@@ -249,8 +209,8 @@ La configuración portable tiene prioridad sobre la global.
 | Fichero | Contenido |
 |---------|-----------|
 | [CONCEPT.md](CONCEPT.md) | Concepto original del proyecto |
-| [AGENT.md](AGENT.md) | Contexto para agentes IA |
-| [SPEC.md](SPEC.md) | Especificación técnica detallada |
+| [AGENT.md](AGENT.md) | Contexto para agentes IA — estado real de implementación |
+| [SPEC.md](SPEC.md) | Especificación técnica detallada (visión completa) |
 | [README.md](README.md) | Esta documentación (ES) |
 | [README_EN.md](README_EN.md) | Documentación (EN) |
 | [INDEX.md](INDEX.md) | Índice de documentación |
