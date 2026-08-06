@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Callable, TypeVar
 
 from ..core.ports import AudioPort, MetadataPort
-from ..core.services import PlayerService
+from ..core.ports.config import ConfigPort
 
 T = TypeVar("T")
+
+# Portable data directory — all persistent files live here.
+DATA_DIR = Path(__file__).parent.parent.parent / "data"
 
 
 class Container:
@@ -49,10 +53,16 @@ def create_container() -> Container:
     in the codebase allowed to import concrete adapters."""
     from ..adapters.audio.pygame_adapter import PygameAudioAdapter
     from ..adapters.metadata.mutagen_adapter import MutagenMetadataAdapter
+    from ..adapters.config.json_adapter import JsonConfigAdapter
 
     container = Container()
     container.register_singleton(AudioPort, PygameAudioAdapter())
     container.register_singleton(MetadataPort, MutagenMetadataAdapter())
+    container.register_singleton(
+        ConfigPort,
+        JsonConfigAdapter(config_path=DATA_DIR / "config.json"),
+    )
+    from ..core.services import PlayerService
     container.register_factory(
         PlayerService,
         lambda: PlayerService(
