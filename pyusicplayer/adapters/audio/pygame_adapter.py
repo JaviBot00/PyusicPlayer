@@ -7,18 +7,28 @@ IMPORTANT — verified empirically against pygame 2.6.1 / SDL 2.28.4 (mp3, ogg, 
    seek mechanism is reloading the file and calling
    play(loops, start=position_seconds).
 2. pygame.mixer.music.get_pos() returns milliseconds *since the last play()
-   or unpause() call*, NOT the absolute position in the track. It resets to 0
-   every time play() is called (including for a seek-reload). This adapter
-   therefore keeps its own `_position_offset` and adds get_pos() on top of it.
-3. pause()/unpause() (without reloading) DO preserve true position correctly —
-   verified: get_pos() continues linearly across a pause/unpause cycle. Only
-   seeking requires the reload workaround above.
-4. Detecting natural track-end requires the *full* pygame.init() (not just
+   call*, and it freezes automatically during pause() and resumes linearly
+   on unpause() without ever resetting to 0 on its own (verified with 4
+   consecutive pause/resume cycles). This means it is ALREADY the correct
+   cumulative position within a play() session — this adapter's own
+   `_position_offset` must only be set on load()/seek()/fresh play(), never
+   re-derived inside pause(). An earlier version of this adapter re-summed
+   offset + get_pos() back into offset on every pause() call, which
+   double-counted elapsed time on each pause/resume cycle (confirmed bug,
+   fixed here, covered by tests/adapters/test_pygame_adapter.py).
+3. Detecting natural track-end requires the *full* pygame.init() (not just
    mixer.init()) plus set_endevent()+event pump, because SDL's event queue
    needs the video subsystem initialized. On Linux without a DISPLAY (e.g. a
    TUI run over plain SSH), this raises "video system not initialized" unless
    SDL_VIDEODRIVER=dummy is set first. This adapter sets that fallback only
    when no DISPLAY is present, so it does not affect real desktop sessions.
+4. pygame/SDL fires the SAME end-of-track event on an explicit stop() as it
+   does on natural completion (found by a test written before this fix, not
+   by manual testing). Without suppressing it, pressing Stop would trigger
+   PlayerService's auto-advance-to-next-track exactly as if the song had
+   finished on its own. stop() sets a one-shot suppress flag that poll()
+   consumes silently. seek()'s reload+play() was checked too and does NOT
+   fire a spurious event, so it needed no such guard.
 """
 
 from __future__ import annotations
@@ -49,6 +59,7 @@ class PygameAudioAdapter:
         self._position_offset = 0.0
         self._on_track_end: Optional[Callable[[], None]] = None
         self._end_event_id: Optional[int] = None
+        self._suppress_next_end_event = False
 
     def initialize(self) -> None:
         if self._initialized:
@@ -100,13 +111,16 @@ class PygameAudioAdapter:
             return
         import pygame
 
-        self._position_offset = self._raw_position()
         pygame.mixer.music.pause()
         self._state = PlaybackState.PAUSED
 
     def stop(self) -> None:
         import pygame
 
+        # pygame/SDL fires the same end-of-track event on an explicit stop()
+        # as it does on natural completion (verified empirically) - without
+        # this flag, pressing Stop would spuriously trigger auto-advance.
+        self._suppress_next_end_event = True
         pygame.mixer.music.stop()
         self._state = PlaybackState.STOPPED
         self._position_offset = 0.0
@@ -127,11 +141,14 @@ class PygameAudioAdapter:
             self._state = PlaybackState.PAUSED
 
     def _raw_position(self) -> float:
-        """Position accumulated during the current play()/unpause() run."""
+        """Position accumulated since the current file was loaded/seeked.
+
+        pygame's get_pos() freezes automatically during pause() and resumes
+        linearly on unpause() (verified empirically) — no manual pause
+        bookkeeping needed here, only _position_offset for post-seek baseline.
+        """
         import pygame
 
-        if self._state == PlaybackState.PAUSED:
-            return self._position_offset
         pos_ms = pygame.mixer.music.get_pos()
         elapsed = pos_ms / 1000.0 if pos_ms >= 0 else 0.0
         return self._position_offset + elapsed
@@ -174,5 +191,9 @@ class PygameAudioAdapter:
         import pygame
 
         for event in pygame.event.get():
-            if event.type == self._end_event_id and self._on_track_end:
-                self._on_track_end()
+            if event.type == self._end_event_id:
+                if self._suppress_next_end_event:
+                    self._suppress_next_end_event = False
+                    continue
+                if self._on_track_end:
+                    self._on_track_end()
