@@ -58,6 +58,7 @@ class Playlist:
     shuffle: bool = False
 
     _shuffle_bag: list[int] = field(default_factory=list, repr=False, compare=False)
+    _shuffle_bag_initialized: bool = field(default=False, repr=False, compare=False)
 
     @property
     def current_track(self) -> Optional[Track]:
@@ -92,6 +93,7 @@ class Playlist:
         self.tracks.clear()
         self.current_index = -1
         self._shuffle_bag.clear()
+        self._shuffle_bag_initialized = False
 
     def _refill_shuffle_bag(self) -> None:
         """Fisher-Yates shuffle of all indices except the current one."""
@@ -100,6 +102,7 @@ class Playlist:
             j = random.randint(0, i)
             indices[i], indices[j] = indices[j], indices[i]
         self._shuffle_bag = indices
+        self._shuffle_bag_initialized = True
 
     def next_index(self) -> int:
         """Get the next track index based on mode. Does not mutate state."""
@@ -110,11 +113,18 @@ class Playlist:
             return self.current_index if self.current_index >= 0 else 0
 
         if self.shuffle:
+            if self._shuffle_bag:
+                return self._shuffle_bag[0]
+            if self._shuffle_bag_initialized and self.mode != PlaylistMode.ALL:
+                # Bag was consumed to empty on a previous advance() and this
+                # isn't loop-all: shuffle only changes ORDER, not whether the
+                # playlist stops or loops - same decision sequential mode
+                # makes at the end of the list.
+                return -1
+            self._refill_shuffle_bag()
             if not self._shuffle_bag:
-                self._refill_shuffle_bag()
-                if not self._shuffle_bag:
-                    # Only one track total.
-                    return self.current_index if self.current_index >= 0 else 0
+                # Only one track total.
+                return self.current_index if self.current_index >= 0 else 0
             return self._shuffle_bag[0]
 
         next_idx = self.current_index + 1
