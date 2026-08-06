@@ -1,0 +1,8 @@
+# Development / testing dependencies (not needed to just run the app)
+
+pytest>=8.0.0
+pytest-asyncio>=0.24.0
+
+# Audio test fixtures are generated at test-collection time with ffmpeg
+# (system binary, not a pip package). Tests needing them are skipped with
+# a clear message if ffmpeg is not on PATH - see tests/conftest.py.
