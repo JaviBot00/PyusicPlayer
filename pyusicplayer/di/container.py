@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, TypeVar
 
-from ..core.ports import AudioPort, MetadataPort
+from ..core.ports import AudioPort, LibraryPort, MetadataPort
 from ..core.ports.config import ConfigPort
 
 T = TypeVar("T")
@@ -54,6 +54,7 @@ def create_container() -> Container:
     from ..adapters.audio.pygame_adapter import PygameAudioAdapter
     from ..adapters.metadata.mutagen_adapter import MutagenMetadataAdapter
     from ..adapters.config.json_adapter import JsonConfigAdapter
+    from ..adapters.library.sqlite_adapter import SqliteLibraryAdapter
 
     container = Container()
     container.register_singleton(AudioPort, PygameAudioAdapter())
@@ -62,6 +63,17 @@ def create_container() -> Container:
         ConfigPort,
         JsonConfigAdapter(config_path=DATA_DIR / "config.json"),
     )
+
+    def _build_library() -> SqliteLibraryAdapter:
+        adapter = SqliteLibraryAdapter(
+            db_path=DATA_DIR / "library.db",
+            metadata_port=container.resolve(MetadataPort),
+        )
+        adapter.initialize()
+        return adapter
+
+    container.register_factory(LibraryPort, _build_library)
+
     from ..core.services import PlayerService
     container.register_factory(
         PlayerService,
