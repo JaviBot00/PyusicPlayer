@@ -5,12 +5,14 @@
 An interactive music player built in Python that runs in both TUI (Terminal User Interface) and GUI (Graphical User Interface) modes, with an optional API server for web and Android clients.
 
 **Current reality check (read this before trusting anything below):** this
-document describes the full original vision. Only the TUI playback path and
-config persistence are actually implemented right now (see "Implementation
-Status" at the bottom, which is kept honest on purpose). Everything about
-GUI, API server, library DB, downloader, lyrics, visualizer, notifications,
-and i18n is still just plan, not code. Treat the sections above
-"Implementation Status" as target design, not a description of what exists.
+document describes the full original vision. The TUI playback path, config
+persistence, and the SQLite library layer (schema + full `LibraryPort`
+implementation, not yet wired into the TUI's UI) are actually implemented
+right now (see "Implementation Status" at the bottom, which is kept honest
+on purpose). Everything about GUI, API server, downloader, lyrics,
+visualizer, notifications, and i18n is still just plan, not code. Treat the
+sections above "Implementation Status" as target design, not a description
+of what exists.
 
 ## Core Features
 
@@ -117,10 +119,11 @@ adapters (implementations) → ports (implements the contract)
 | **Observer** | core/services.py (PlayerService) | Notify UI on playback state/track change via `on_state_change`/`on_track_change` callbacks |
 | **Factory** | di/container.py | Build and wire concrete adapters behind ports |
 | **Adapter** | adapters/* | Wrap external libraries (pygame, mutagen) behind interfaces |
+| **Repository** | adapters/library/sqlite_adapter.py (SqliteLibraryAdapter) | CRUD + search over Artist/Album/Song/Collection behind `LibraryPort`, hiding SQL from the rest of the app |
 
-The Repository (library SQLite) and Template Method (visualizer FFT) patterns
-listed in earlier drafts of this doc apply to features that are not built
-yet - removed from this table until real code exists to point at.
+The Template Method (visualizer FFT) pattern listed in earlier drafts of
+this doc applies to a feature that is not built yet - removed from this
+table until real code exists to point at.
 
 ## Technology Stack
 
@@ -174,11 +177,11 @@ PyusicPlayer/
 │   │   ├── models.py              # Track, Playlist, PlaylistMode (Fisher-Yates shuffle)
 │   │   ├── services.py            # PlayerService
 │   │   └── ports/                 # Protocol interfaces
-│   │       ├── __init__.py        # Exports AudioPort + MetadataPort (the only ones previously wired); ConfigPort now also wired
+│   │       ├── __init__.py        # Exports AudioPort, MetadataPort, LibraryPort (+ Artist/Album/Song/Collection); ConfigPort wired separately in di/container.py
 │   │       ├── audio.py           # AudioPort Protocol (implemented)
 │   │       ├── metadata.py        # MetadataPort Protocol (implemented)
 │   │       ├── config.py          # ConfigPort Protocol + AppConfig dataclass (implemented)
-│   │       ├── library.py         # LibraryPort Protocol (defined, no adapter, not wired)
+│   │       ├── library.py         # LibraryPort Protocol (implemented — SqliteLibraryAdapter)
 │   │       ├── lyrics.py          # LyricsPort Protocol (defined, no adapter, not wired)
 │   │       ├── notifications.py   # NotificationsPort Protocol (defined, no adapter, not wired)
 │   │       ├── downloader.py      # DownloaderPort Protocol (defined, no adapter, not wired)
@@ -195,7 +198,9 @@ PyusicPlayer/
 │   │   ├── config/
 │   │   │   ├── __init__.py
 │   │   │   └── json_adapter.py    # JsonConfigAdapter: load/save AppConfig to ./data/config.json, atomic write via os.replace()
-│   │   ├── library/               # empty stub, future phase
+│   │   ├── library/
+│   │   │   ├── __init__.py
+│   │   │   └── sqlite_adapter.py  # SqliteLibraryAdapter: full LibraryPort — Artist/Album/Song/Collection CRUD, import_directory, get_stats. Constructor requires a MetadataPort.
 │   │   ├── lyrics/                # empty stub, future phase
 │   │   ├── notifications/         # empty stub, future phase
 │   │   ├── downloader/            # empty stub, future phase
@@ -210,7 +215,7 @@ PyusicPlayer/
 │   │
 │   └── di/
 │       ├── __init__.py
-│       └── container.py           # Container with register/resolve; create_container() wires AudioPort, MetadataPort, ConfigPort. DATA_DIR = ./data/
+│       └── container.py           # Container with register/resolve; create_container() wires AudioPort, MetadataPort, ConfigPort, LibraryPort (factory, lazy — only touches ./data/library.db when resolved). DATA_DIR = ./data/
 │
 ├── tests/                         # pytest suite - see "Testing" section below
 │   ├── conftest.py                # audio_fixtures (ffmpeg-generated), container fixtures
@@ -283,41 +288,92 @@ method directly, so it can't pass while the binding itself is broken.
 | GET | `/api/search?q=` | Search songs |
 | POST | `/api/download` | Download audio from URL |
 
-## Database Schema (SQLite) — NOT IMPLEMENTED, future phase
+## Database Schema (SQLite) — IMPLEMENTED
+
+Lives at `./data/library.db`, built by `SqliteLibraryAdapter`
+(`adapters/library/sqlite_adapter.py`). Deliberately diverges from the
+original draft schema above the "Implementation Status" section used to show
+here: no `collections.path`/`last_scan`, no `songs.collection_id`,
+`songs.duration_ms`, `songs.has_lyrics`, `songs.has_cover` — none of those
+matched what `LibraryPort` (`core/ports/library.py`) actually specifies.
 
 ```sql
-CREATE TABLE collections (
-    id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,
-    path TEXT NOT NULL UNIQUE,
-    last_scan TIMESTAMP
-);
-
 CREATE TABLE artists (
-    id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    sort_name TEXT,
+    image_path TEXT
 );
 
 CREATE TABLE albums (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
     artist_id INTEGER REFERENCES artists(id),
-    year INTEGER
+    year INTEGER,
+    cover_path TEXT,
+    disk_count INTEGER NOT NULL DEFAULT 1,
+    UNIQUE (title, artist_id)
 );
 
 CREATE TABLE songs (
-    id INTEGER PRIMARY KEY,
-    title TEXT NOT NULL,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_path TEXT NOT NULL UNIQUE,
+    title TEXT,
     artist_id INTEGER REFERENCES artists(id),
     album_id INTEGER REFERENCES albums(id),
-    collection_id INTEGER REFERENCES collections(id),
-    file_path TEXT NOT NULL UNIQUE,
-    duration_ms INTEGER,
+    track_number INTEGER,
+    disc_number INTEGER,
+    duration REAL,             -- seconds, matches Track.duration elsewhere
     format TEXT,
-    has_lyrics BOOLEAN DEFAULT FALSE,
-    has_cover BOOLEAN DEFAULT FALSE
+    size INTEGER,
+    last_modified TEXT,        -- ISO 8601 string; SQLite has no datetime type
+    last_scanned TEXT
+);
+
+CREATE TABLE collections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    is_smart INTEGER NOT NULL DEFAULT 0,
+    query TEXT
+);
+
+-- Many-to-many: a song can belong to more than one collection at once
+-- (e.g. a manual playlist AND a smart list). Deliberate deviation from a
+-- songs.collection_id column, which would only allow one.
+CREATE TABLE collection_songs (
+    collection_id INTEGER NOT NULL REFERENCES collections(id),
+    song_id INTEGER NOT NULL REFERENCES songs(id),
+    PRIMARY KEY (collection_id, song_id)
 );
 ```
+
+Design notes worth knowing before touching this code:
+- `UNIQUE(title, artist_id)` on `albums` does **not** stop duplicate titles
+  when `artist_id IS NULL` — SQLite treats every `NULL` as distinct in a
+  UNIQUE index. Dedup for that case is application-level only, inside
+  `get_or_create_album`. Covered explicitly by
+  `TestSchemaConstraints::test_duplicate_album_title_with_null_artist_is_not_caught_by_db`.
+- Case-insensitive search (`search_artists`/`search_albums`/`search_songs`)
+  uses Python `str.casefold()` in application code, not SQL
+  `LIKE ... COLLATE NOCASE` — `COLLATE NOCASE` only folds ASCII A-Z and
+  misses accented case pairs (`Ä` U+00C4 → `ä` U+00E4), which matters for a
+  library with ES/EN content.
+- `add_song` is insert-only; a duplicate `file_path` (UNIQUE at the schema
+  level) raises `ValueError`, not a raw `sqlite3.IntegrityError`. Re-scans
+  go through `update_song` via `import_directory`, never through `add_song`
+  twice.
+- `import_directory` requires a `MetadataPort` (constructor-injected into
+  `SqliteLibraryAdapter`). Re-scans are idempotent: a file whose filesystem
+  mtime hasn't advanced past the stored `last_modified` is skipped; a
+  changed file is updated via `update_song`; only genuinely new files count
+  toward the returned total. A file that fails to parse (unsupported format,
+  or a supported extension with corrupt content) is skipped with a
+  `logging.WARNING` record naming the file, and the scan continues.
+- `get_stats()` returns a fixed key set:
+  `{"songs", "albums", "artists", "collections", "total_duration"}`.
+  `total_duration` sums `songs.duration`, `NULL`s excluded by SQL `SUM()`
+  semantics (not zero-padded), coalesced to `0.0` on an empty library so the
+  return type is always `float`, never `None`.
 
 ## Configuration Schema — IMPLEMENTED
 
@@ -359,6 +415,11 @@ added to `AppConfig` when those phases are implemented.
 | Test-first workflow | pytest, real audio fixtures over mocks where feasible | Two real bugs (pause double-counting, stop() firing a spurious end-event) were only caught this way - see Testing section |
 | Previous-track restart threshold | 5.0s, `PlayerService.PREVIOUS_TRACK_RESTART_THRESHOLD_SECONDS` | Named constant, not a magic number, so it's trivial to retune later without hunting through the codebase |
 | Shuffle bag exhaustion vs `mode` | shuffle only changes order; `mode` alone decides stop/loop-one/loop-all at bag exhaustion | Bug found in production: shuffle was implicitly looping forever regardless of `mode=NONE`. Fixed with a `_shuffle_bag_initialized` flag to distinguish "never filled" (first advance, must still play something) from "exhausted after a full cycle" (must stop unless `mode=ALL`) |
+| Collection membership | many-to-many (`collection_songs` join table), not `songs.collection_id` | `LibraryPort.add_to_collection`/`get_collection_songs` only make sense if a song can be in more than one collection at once (playlist + smart list) |
+| Library search case-folding | Python `str.casefold()` in application code, not SQL `COLLATE NOCASE` | `COLLATE NOCASE` only folds ASCII A-Z; misses accented case pairs (Ä→ä), which matters for ES/EN content |
+| `add_song` on duplicate `file_path` | raises `ValueError`, insert-only | `update_song` is the separate, explicit path for changes; silent upsert would hide re-scan bugs |
+| `import_directory` re-scan | idempotent by filesystem mtime vs stored `last_modified`: skip unchanged, `update_song` changed, only new files counted | Re-running an import over an unchanged library must be a cheap no-op, not a pile of duplicate-path errors |
+| `import_directory` per-file failures | skip + `logging.WARNING` with the file path, scan continues | One corrupt file in a library of hundreds must not abort the whole import |
 
 ## Important Notes
 
@@ -406,6 +467,7 @@ pytest tests/core/
 | `tests/adapters/test_pygame_adapter.py` | Real `pygame.mixer.music` against ffmpeg-generated audio: seek, position tracking, pause/resume drift, track-end detection | Yes - real (headless/dummy-driver) pygame |
 | `tests/adapters/test_mutagen_adapter.py` | Real `mutagen` extraction across every supported format | Yes - real files |
 | `tests/adapters/test_config_adapter.py` | `JsonConfigAdapter`: load/save/defaults/corruption/clamping/atomicity | No - tmp_path only |
+| `tests/adapters/test_sqlite_library_adapter.py` | `SqliteLibraryAdapter`: full `LibraryPort` — lifecycle, Artist/Album/Song/Collection CRUD, schema UNIQUE constraints, `import_directory` (real `MutagenMetadataAdapter` + ffmpeg fixtures, idempotent re-scan, per-file failure isolation), `get_stats` — 89 tests | Import tests: yes, real ffmpeg-generated audio. Everything else: tmp_path only |
 | `tests/di/test_container.py` | `create_container()` actually wires adapters (this is what was broken before: an empty container that resolved nothing) | No |
 | `tests/interfaces/test_tui_app.py` | Full Textual `App.run_test()` harness: playlist loading, now-playing highlight, mode bar, pause/resume regression at the app level | Yes - real pygame + real Textual event loop |
 | `tests/interfaces/test_tui_config.py` | TUI restores volume/shuffle/repeat_mode from `ConfigPort` on mount, persists them on unmount; falls back to defaults if no config file | No - tmp_path only, empty playlist folder (no audio needed) |
@@ -422,10 +484,14 @@ isn't on `PATH` - fixture generation happens once per test session in
 
 ### What isn't covered yet
 
-No tests exist for the empty adapter stubs (lyrics/notifications/library/
-downloader/visualizer) or the GUI/API interfaces, because none of that code
-exists yet either. When those get implemented, tests are written first, per
-the workflow above - not bundled in afterward.
+No tests exist for the empty adapter stubs (lyrics/notifications/downloader/
+visualizer) or the GUI/API interfaces, because none of that code exists yet
+either. When those get implemented, tests are written first, per the
+workflow above - not bundled in afterward. Note `test_container.py`
+deliberately does not resolve `LibraryPort` through the shared `container`
+fixture, for the same reason it never resolved `ConfigPort` that way: the
+factory points at the real `./data/library.db` path, and resolving it would
+create/touch that file as a side effect of running the test suite.
 
 ## Implementation Status
 
@@ -438,13 +504,14 @@ the workflow above - not bundled in afterward.
 - [x] `MutagenMetadataAdapter`: full tag extraction for MP3/FLAC/OGG/Opus/M4A, duration-only for WAV/WMA, no silent failures
 - [x] `JsonConfigAdapter`: load/save `AppConfig` to `./data/config.json`, atomic write, defaults on missing/corrupt file, volume clamping, forward-compat unknown-key tolerance — 11 tests
 - [x] TUI reads/writes config on startup/exit: volume/shuffle/repeat_mode restored in `on_mount`, persisted in `on_unmount` — 8 tests
-- [x] `Container`/`create_container()`: wires AudioPort, MetadataPort, ConfigPort
+- [x] `SqliteLibraryAdapter`: full `LibraryPort` — lifecycle, Artist/Album/Song/Collection CRUD (many-to-many collection membership, DB-level UNIQUE constraints, Unicode-correct case-insensitive search), `import_directory` (idempotent re-scan, per-file failure isolation with logging, real `MutagenMetadataAdapter` integration), `get_stats` — 89 tests
+- [x] `Container`/`create_container()`: wires AudioPort, MetadataPort, ConfigPort, LibraryPort (lazy factory)
 - [x] TUI (`interfaces/tui/app.py`, Textual): playlist from folder scan, play/pause/stop/next/prev/seek/volume, now-playing highlight, mode/shuffle indicator bar
 - [x] `python -m pyusicplayer --tui` entry point; `--gui`/`--server` exit with an explicit "not implemented" message instead of crashing
-- [x] Test suite: 108 tests across core/adapters/di/interfaces layers
+- [x] Test suite: 197 tests across core/adapters/di/interfaces layers
 
 ### Not started (planned, no code, no adapters, no wiring)
-- [ ] SQLite library adapter
+- [ ] Cover art extraction (mutagen embedded APIC/covr) + fixed display in the artist/title block
 - [ ] Lyrics adapter (LRCLIB + local .lrc)
 - [ ] Notifications adapter
 - [ ] Visualizer (FFT, 5 styles)
@@ -454,11 +521,10 @@ the workflow above - not bundled in afterward.
 - [ ] i18n translations
 
 ### Next steps (in the order they'll likely be tackled)
-1. SQLite library adapter — test-first
-2. Cover art extraction (mutagen embedded APIC/covr) + fixed display in the artist/title block — test-first
-3. Visualizer (FFT) — test-first
-4. Lyrics adapter — test-first
-5. Notifications adapter — test-first
-6. GUI (CustomTkinter) — test-first
-7. FastAPI server — test-first
-8. i18n translations
+1. Cover art extraction (mutagen embedded APIC/covr) + fixed display in the artist/title block — test-first
+2. Visualizer (FFT) — test-first
+3. Lyrics adapter — test-first
+4. Notifications adapter — test-first
+5. GUI (CustomTkinter) — test-first
+6. FastAPI server — test-first
+7. i18n translations
