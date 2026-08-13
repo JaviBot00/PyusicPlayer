@@ -6,8 +6,11 @@ An interactive music player built in Python that runs in both TUI (Terminal User
 
 **Current reality check (read this before trusting anything below):** this
 document describes the full original vision. The TUI playback path, config
-persistence, and the SQLite library layer (schema + full `LibraryPort`
-implementation, not yet wired into the TUI's UI) are actually implemented
+persistence, the SQLite library layer (schema + full `LibraryPort`
+implementation, not yet wired into the TUI's UI), and the full cover art
+feature (mutagen APIC/covr extraction, `CoverRendererPort` with 3 adapters,
+`AppConfig.cover_render_mode`, the always-visible TUI widget, and a
+settings screen to change the mode at runtime) are actually implemented
 right now (see "Implementation Status" at the bottom, which is kept honest
 on purpose). Everything about GUI, API server, downloader, lyrics,
 visualizer, notifications, and i18n is still just plan, not code. Treat the
@@ -35,6 +38,19 @@ of what exists.
   original "cover as one of 3 alternating views" design because two
   representations of the same image in a terminal UI is redundant and
   wastes scarce space.
+  - **Render mode is user-selectable from settings** (comma key opens
+    `SettingsScreen`, a modal `ListView` of the 3 modes): truecolor
+    half-block, ASCII monochrome, or text placeholder. Truecolor and ASCII
+    share the same Pillow-based decode/resize pipeline (aspect-ratio
+    correction for terminal cells, which are ~2:1 tall). Placeholder needs
+    no Pillow at all and is also the default `AppConfig.cover_render_mode`.
+    Selecting a mode persists it immediately and re-renders the currently
+    playing track's cover right away, no restart needed.
+  - **Placeholder is not just a third mode, it's the mandatory fallback**
+    for the other two: if cover decode fails, or the terminal doesn't
+    support truecolor, rendering falls back to placeholder automatically
+    regardless of the configured mode. This is what keeps "always visible"
+    true even when the image pipeline can't produce something usable.
 
 ### Alternate Views (Independent Toggles)
 - **Lyrics**: Synchronized lyrics display (or message if not available)
@@ -120,6 +136,7 @@ adapters (implementations) → ports (implements the contract)
 | **Factory** | di/container.py | Build and wire concrete adapters behind ports |
 | **Adapter** | adapters/* | Wrap external libraries (pygame, mutagen) behind interfaces |
 | **Repository** | adapters/library/sqlite_adapter.py (SqliteLibraryAdapter) | CRUD + search over Artist/Album/Song/Collection behind `LibraryPort`, hiding SQL from the rest of the app |
+| **Decorator** | adapters/cover_renderer/fallback_renderer.py (FallbackCoverRenderer) | Wraps a primary `CoverRendererPort` adapter (truecolor/ASCII), catching decode failures and `cover_data=None` and delegating to `PlaceholderCoverRenderer` - keeps the "never raise / always visible" contract out of the primary adapters themselves |
 
 The Template Method (visualizer FFT) pattern listed in earlier drafts of
 this doc applies to a feature that is not built yet - removed from this
@@ -133,6 +150,7 @@ table until real code exists to point at.
 |-----------|------------|-----------|
 | Audio Backend | pygame (primary), VLC (alternative) | pygame is simple, VLC supports all formats |
 | Metadata | mutagen + EasyID3 | Multi-format, actively maintained |
+| Cover rendering | Pillow (decode/resize) + Rich (terminal paint) | Needed to decode arbitrary embedded JPEG/PNG and correct for terminal cell aspect ratio (~2:1); shared by both truecolor and ASCII render modes. `CoverRendererPort.render()` returns `rich.console.RenderableType` since Textual is Rich-based |
 | Lyrics | LRCLIB API + local .lrc files | Free, offline fallback |
 | Visualizer | numpy (FFT) | Fast numerical processing |
 | Config | JSON (`./data/config.json`) | Portable, human-readable, zero extra deps |
@@ -162,7 +180,11 @@ table until real code exists to point at.
 - All formats supported by pygame/VLC. Metadata tag extraction (not just
   duration) is currently implemented for MP3/FLAC/OGG/Opus/M4A; WAV and WMA
   only report duration (see adapters/metadata/mutagen_adapter.py docstring
-  for why).
+  for why). Embedded cover art extraction (`cover_data`/`cover_mime` on
+  `AudioMetadata`/`Track`) is implemented for MP3 (APIC)/FLAC (Picture)/M4A
+  (covr) only - OGG/Opus/WAV/WMA return `None` for cover fields, same
+  scope boundary as tag extraction and for the same reason (mutagen support
+  differs per container format).
 
 ## Project Structure
 
@@ -185,6 +207,7 @@ PyusicPlayer/
 │   │       ├── lyrics.py          # LyricsPort Protocol (defined, no adapter, not wired)
 │   │       ├── notifications.py   # NotificationsPort Protocol (defined, no adapter, not wired)
 │   │       ├── downloader.py      # DownloaderPort Protocol (defined, no adapter, not wired)
+│   │       ├── cover_renderer.py    # CoverRendererPort Protocol + CoverRenderMode constants (implemented, 3 adapters + FallbackCoverRenderer decorator + settings screen, fully wired into AppConfig and the TUI)
 │   │       └── visualizer.py      # VisualizerPort Protocol (defined, no adapter, not wired)
 │   │
 │   ├── adapters/                  # Concrete implementations
@@ -194,13 +217,20 @@ PyusicPlayer/
 │   │   │   └── pygame_adapter.py  # Real pygame backend: seek, position tracking, track-end detection all verified against real audio (see module docstring for the empirically-found quirks)
 │   │   ├── metadata/
 │   │   │   ├── __init__.py
-│   │   │   └── mutagen_adapter.py # Mutagen reader: MP3/FLAC/OGG/Opus/M4A full tags, WAV/WMA duration-only
+│   │   │   └── mutagen_adapter.py # Mutagen reader: MP3/FLAC/OGG/Opus/M4A full tags, WAV/WMA duration-only; cover_data/cover_mime (APIC/Picture/covr) for MP3/FLAC/M4A
 │   │   ├── config/
 │   │   │   ├── __init__.py
 │   │   │   └── json_adapter.py    # JsonConfigAdapter: load/save AppConfig to ./data/config.json, atomic write via os.replace()
 │   │   ├── library/
 │   │   │   ├── __init__.py
 │   │   │   └── sqlite_adapter.py  # SqliteLibraryAdapter: full LibraryPort — Artist/Album/Song/Collection CRUD, import_directory, get_stats. Constructor requires a MetadataPort.
+│   │   ├── cover_renderer/
+│   │   │   ├── __init__.py
+│   │   │   ├── placeholder_renderer.py  # PlaceholderCoverRenderer: fixed text marker, ignores cover_data/mime, the mandatory fallback
+│   │   │   ├── ascii_renderer.py        # AsciiCoverRenderer: Pillow decode/resize, luminance-to-char-ramp, raises on bad input by design
+│   │   │   ├── truecolor_renderer.py    # TruecolorBlockCoverRenderer: Pillow decode/resize, half-block (▀) per-cell fg/bg color, raises on bad input by design
+│   │   │   ├── fallback_renderer.py     # FallbackCoverRenderer: Decorator, catches primary.render() exceptions + cover_data=None, delegates to Placeholder
+│   │   │   └── factory.py               # create_cover_renderer(mode): also checks COLORTERM env for truecolor capability at selection time
 │   │   ├── lyrics/                # empty stub, future phase
 │   │   ├── notifications/         # empty stub, future phase
 │   │   ├── downloader/            # empty stub, future phase
@@ -210,7 +240,10 @@ PyusicPlayer/
 │   │   ├── __init__.py
 │   │   ├── tui/
 │   │   │   ├── __init__.py
-│   │   │   └── app.py             # Textual TUI: play/pause/stop/next/prev/seek/volume, now-playing highlight, mode/shuffle indicator bar
+│   │   │   ├── app.py             # Textual TUI: play/pause/stop/next/prev/seek/volume, now-playing highlight, mode/shuffle indicator bar, always-visible cover-art widget (calls create_cover_renderer directly - documented DI exception, see Key Decisions)
+│   │   │   └── screens/
+│   │   │       ├── __init__.py
+│   │   │       └── settings_screen.py # SettingsScreen: ModalScreen[Optional[str]], ListView of the 3 cover_render_mode options, dismisses with the chosen mode or None on Escape
 │   │   └── gui/                   # empty stub, future phase
 │   │
 │   └── di/
@@ -262,6 +295,7 @@ removed entirely. The only entry point is `python -m pyusicplayer`.
 - `L` - Loop one
 - `L` (uppercase, i.e. Shift+L on the physical key) - Loop all
 - `R` - Shuffle
+- `,` - Open settings (cover art render mode: truecolor / ASCII / placeholder)
 
 Note: the binding for loop-all is declared as `"L"` (uppercase), not
 `"shift+l"`. Bug found in production: terminals send uppercase letters as
@@ -384,14 +418,19 @@ Config is persisted to `./data/config.json`. Phase 1 fields only:
   "volume": 0.7,
   "repeat_mode": "none",
   "shuffle": false,
-  "last_playlist_path": null
+  "last_playlist_path": null,
+  "cover_render_mode": "placeholder"
 }
 ```
 
 `AppConfig` dataclass lives in `core/ports/config.py`. The adapter
 (`JsonConfigAdapter`) writes atomically via `os.replace()` on a `.tmp`
 sibling. Unknown keys in the file are silently ignored (forward-compat).
-Out-of-range volume is clamped to [0.0, 1.0] on load.
+Out-of-range volume is clamped to [0.0, 1.0] on load. `cover_render_mode`
+is deliberately NOT validated at this layer - an unrecognized string
+passes through unchanged; `adapters/cover_renderer/factory.py::create_cover_renderer`
+is the single place that decides what's a valid mode, defaulting anything
+it doesn't recognize to placeholder.
 
 Future fields (layout, visualizer style, alternate views, etc.) will be
 added to `AppConfig` when those phases are implemented.
@@ -420,6 +459,11 @@ added to `AppConfig` when those phases are implemented.
 | `add_song` on duplicate `file_path` | raises `ValueError`, insert-only | `update_song` is the separate, explicit path for changes; silent upsert would hide re-scan bugs |
 | `import_directory` re-scan | idempotent by filesystem mtime vs stored `last_modified`: skip unchanged, `update_song` changed, only new files counted | Re-running an import over an unchanged library must be a cheap no-op, not a pile of duplicate-path errors |
 | `import_directory` per-file failures | skip + `logging.WARNING` with the file path, scan continues | One corrupt file in a library of hundreds must not abort the whole import |
+| Cover art field ownership | `MetadataPort.extract()` fills `cover_data`/`cover_mime` inline (not just the separate `get_cover()` method); `get_cover()` refactored to share the same static helpers | The old `get_cover()`-only design meant `extract()` silently discarded cover bytes it already had access to - `Track` always ended up with `cover_data=None` regardless of what mutagen found |
+| Cover render backend selection | Config-driven (`cover_render_mode`), user-changeable at runtime from `SettingsScreen` (comma key) between truecolor blocks / ASCII / placeholder | User explicitly requested all three coexist rather than picking one; terminal capability varies (SSH/tmux often lack truecolor) so a single hardcoded mode isn't safe |
+| Cover render fallback | Placeholder is the mandatory fallback for truecolor/ASCII on decode failure or missing truecolor support, not just a third selectable mode | Keeps "cover art always visible" true even when the image pipeline can't produce a real image |
+| `create_cover_renderer` called directly from `app.py`, not through `Container` | Documented exception to the "only container.py imports concrete adapters" rule | `Container.resolve()` memoizes factory results into singletons; `cover_render_mode` can change at runtime via `SettingsScreen`, and a memoized renderer would silently keep serving the OLD mode after the user changes it. Rejected alternative: add a non-memoizing `resolve_factory()` method to `Container` just for this one caller - not worth the added DI surface for a single use site |
+| `on_unmount` config save | Must rebuild `AppConfig` with `cover_render_mode=self._cover_render_mode` explicitly, not just volume/shuffle/repeat_mode | Bug caught while wiring the settings screen: unmount was constructing `AppConfig(...)` without this field, which meant it silently reset to the default `"placeholder"` on every app exit, discarding whatever the settings screen had just persisted mid-session |
 
 ## Important Notes
 
@@ -465,12 +509,15 @@ pytest tests/core/
 | `tests/core/test_models.py` | `Track`, `Playlist` (Fisher-Yates shuffle, sequential/loop modes) | No - pure logic |
 | `tests/core/test_services.py` | `PlayerService` against `FakeAudioPort`/`FakeMetadataPort` test doubles | No - fast, in-memory |
 | `tests/adapters/test_pygame_adapter.py` | Real `pygame.mixer.music` against ffmpeg-generated audio: seek, position tracking, pause/resume drift, track-end detection | Yes - real (headless/dummy-driver) pygame |
-| `tests/adapters/test_mutagen_adapter.py` | Real `mutagen` extraction across every supported format | Yes - real files |
-| `tests/adapters/test_config_adapter.py` | `JsonConfigAdapter`: load/save/defaults/corruption/clamping/atomicity | No - tmp_path only |
+| `tests/adapters/test_mutagen_adapter.py` | Real `mutagen` extraction across every supported format, including embedded cover art (`cover_data`/`cover_mime`) for MP3/FLAC/M4A via fake-but-well-formed APIC/Picture/covr tags embedded in fixtures - 19 tests | Yes - real files |
+| `tests/adapters/test_config_adapter.py` | `JsonConfigAdapter`: load/save/defaults/corruption/clamping/atomicity, `cover_render_mode` round-trip and deliberately-unvalidated passthrough | No - tmp_path only |
 | `tests/adapters/test_sqlite_library_adapter.py` | `SqliteLibraryAdapter`: full `LibraryPort` — lifecycle, Artist/Album/Song/Collection CRUD, schema UNIQUE constraints, `import_directory` (real `MutagenMetadataAdapter` + ffmpeg fixtures, idempotent re-scan, per-file failure isolation), `get_stats` — 89 tests | Import tests: yes, real ffmpeg-generated audio. Everything else: tmp_path only |
+| `tests/adapters/test_cover_renderer.py` | `CoverRendererPort` adapters: Placeholder/Ascii/Truecolor rendering, `FallbackCoverRenderer` decorator (delegates on `cover_data=None`, catches primary exceptions), `create_cover_renderer` factory including COLORTERM capability branching — 14 tests | No — real Pillow-decoded synthetic images, no ffmpeg/mutagen needed |
 | `tests/di/test_container.py` | `create_container()` actually wires adapters (this is what was broken before: an empty container that resolved nothing) | No |
 | `tests/interfaces/test_tui_app.py` | Full Textual `App.run_test()` harness: playlist loading, now-playing highlight, mode bar, pause/resume regression at the app level | Yes - real pygame + real Textual event loop |
 | `tests/interfaces/test_tui_config.py` | TUI restores volume/shuffle/repeat_mode from `ConfigPort` on mount, persists them on unmount; falls back to defaults if no config file | No - tmp_path only, empty playlist folder (no audio needed) |
+| `tests/interfaces/test_tui_cover.py` | Always-visible `#cover-art` widget: placeholder before any track plays and for tracks with no/undecodable cover, real ascii rendering for a genuinely decodable cover, placeholder-mode ignoring real cover data - 6 tests | Yes - real ffmpeg audio + a genuine Pillow-decodable PNG fixture (`mp3_real_cover`, distinct from the fake-bytes `mp3_cover` fixture used for extraction tests) |
+| `tests/interfaces/test_tui_settings.py` | `SettingsScreen`: comma keybinding opens it, Escape cancels without touching disk or in-memory mode, selecting a mode persists to `./config.json` and re-renders the current track's cover immediately, plus a keyboard-driven (not action-method-call) selection test in the same spirit as the loop-all regression test | Yes - real ffmpeg audio |
 
 `tests/core/test_models.py::TestPlaylistShuffleRespectsMode` and
 `tests/interfaces/test_tui_app.py::test_loop_all_keybinding_actually_triggers_via_keypress`
@@ -481,6 +528,15 @@ Audio-backed tests are marked `@pytest.mark.audio` (or module-level
 `pytestmark = pytest.mark.audio`) and are skipped, not failed, if `ffmpeg`
 isn't on `PATH` - fixture generation happens once per test session in
 `tests/conftest.py::audio_fixtures`, not from committed binary files.
+`audio_fixtures` also embeds fake-but-well-formed cover art (arbitrary bytes
+with a correct declared mime type, not real decodable images - Pillow isn't
+a test dependency for the extraction slice) into `mp3_cover`/`flac_cover`/
+`m4a_cover` copies via `_embed_covers()`, using mutagen directly rather than
+ffmpeg, so the no-cover originals stay untouched for existing tag tests.
+`_embed_covers()` also adds `mp3_real_cover`: a genuine Pillow-generated PNG
+embedded via mutagen, needed for TUI tests that must exercise the actual
+ascii/truecolor decode pipeline rather than only the fallback-on-garbage
+path the fake-bytes fixtures exercise.
 
 ### What isn't covered yet
 
@@ -508,10 +564,12 @@ create/touch that file as a side effect of running the test suite.
 - [x] `Container`/`create_container()`: wires AudioPort, MetadataPort, ConfigPort, LibraryPort (lazy factory)
 - [x] TUI (`interfaces/tui/app.py`, Textual): playlist from folder scan, play/pause/stop/next/prev/seek/volume, now-playing highlight, mode/shuffle indicator bar
 - [x] `python -m pyusicplayer --tui` entry point; `--gui`/`--server` exit with an explicit "not implemented" message instead of crashing
-- [x] Test suite: 197 tests across core/adapters/di/interfaces layers
+- [x] Cover art extraction: `MutagenMetadataAdapter.extract()` fills `cover_data`/`cover_mime` inline for MP3 (APIC)/FLAC (Picture)/M4A (covr), sharing static helpers with the standalone `get_cover()` method; `Track` gained `cover_mime`; `PlayerService.add_files()` propagates both fields (previously silently discarded)
+- [x] Cover art rendering: `CoverRendererPort` Protocol + `CoverRenderMode` constants; `PlaceholderCoverRenderer`, `AsciiCoverRenderer`, `TruecolorBlockCoverRenderer` adapters; `FallbackCoverRenderer` decorator enforcing the "never raise / always visible" contract; `create_cover_renderer(mode)` factory with COLORTERM-based truecolor capability check at selection time
+- [x] Cover art UI: `AppConfig.cover_render_mode` field (unvalidated at this layer by design) + `JsonConfigAdapter` persistence; always-visible `#cover-art` widget in the TUI next to `#now-playing` inside a `Horizontal` `#media-display` row; `SettingsScreen` modal (comma key) to change the mode at runtime, persisting immediately and re-rendering the current track without a restart. `create_cover_renderer` is called directly from `app.py` rather than through `Container` - a documented exception (see Key Decisions) because `Container.resolve()` memoizes factories and this needs to react to a runtime-changeable value
+- [x] Test suite: 234 tests across core/adapters/di/interfaces layers (Pillow's `Image.getdata()` emits a DeprecationWarning, non-blocking, not yet addressed)
 
 ### Not started (planned, no code, no adapters, no wiring)
-- [ ] Cover art extraction (mutagen embedded APIC/covr) + fixed display in the artist/title block
 - [ ] Lyrics adapter (LRCLIB + local .lrc)
 - [ ] Notifications adapter
 - [ ] Visualizer (FFT, 5 styles)
@@ -521,10 +579,9 @@ create/touch that file as a side effect of running the test suite.
 - [ ] i18n translations
 
 ### Next steps (in the order they'll likely be tackled)
-1. Cover art extraction (mutagen embedded APIC/covr) + fixed display in the artist/title block — test-first
-2. Visualizer (FFT) — test-first
-3. Lyrics adapter — test-first
-4. Notifications adapter — test-first
-5. GUI (CustomTkinter) — test-first
-6. FastAPI server — test-first
-7. i18n translations
+1. Visualizer (FFT) — test-first
+2. Lyrics adapter — test-first
+3. Notifications adapter — test-first
+4. GUI (CustomTkinter) — test-first
+5. FastAPI server — test-first
+6. i18n translations
