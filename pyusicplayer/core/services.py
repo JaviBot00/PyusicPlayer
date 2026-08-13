@@ -78,6 +78,8 @@ class PlayerService:
                 duration=meta.duration,
                 track_number=meta.track_number,
                 disc_number=meta.disc_number,
+                cover_data=meta.cover_data,
+                cover_mime=meta.cover_mime,
             )
             self._playlist.add_track(track)
             added += 1

@@ -28,6 +28,7 @@ class Track:
     track_number: Optional[int] = None
     disc_number: Optional[int] = None
     cover_data: Optional[bytes] = None
+    cover_mime: Optional[str] = None
 
     def __post_init__(self) -> None:
         if not self.title:

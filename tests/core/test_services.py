@@ -89,15 +89,22 @@ class FakeAudioPort:
 class FakeMetadataPort:
     """In-memory MetadataPort double with a pre-seeded duration table."""
 
-    def __init__(self, durations: Optional[dict[str, float]] = None) -> None:
+    def __init__(self, durations: Optional[dict[str, float]] = None, covers: Optional[dict[str, tuple]] = None) -> None:
         self.durations = durations or {}
+        self.covers = covers or {}
 
     def extract(self, file_path: str) -> AudioMetadata:
         if file_path == "missing.mp3":
             raise FileNotFoundError(file_path)
         if file_path.endswith(".xyz"):
             raise ValueError("unsupported")
-        return AudioMetadata(file_path=file_path, duration=self.durations.get(file_path, 100.0))
+        cover_data, cover_mime = self.covers.get(file_path, (None, None))
+        return AudioMetadata(
+            file_path=file_path,
+            duration=self.durations.get(file_path, 100.0),
+            cover_data=cover_data,
+            cover_mime=cover_mime,
+        )
 
     def get_cover(self, file_path: str):
         return None
@@ -127,6 +134,22 @@ class TestAddFiles:
         svc = PlayerService(audio=audio, metadata=FakeMetadataPort({"a.mp3": 42.0}))
         svc.add_files(["a.mp3"])
         assert svc.playlist.tracks[0].duration == 42.0
+
+    def test_add_files_populates_track_cover_from_metadata(self):
+        """Regression guard: add_files() previously discarded cover_data/
+        cover_mime from AudioMetadata entirely - Track always ended up with
+        cover_data=None regardless of what the adapter extracted."""
+        audio = FakeAudioPort()
+        covers = {"a.mp3": (b"fake-cover-bytes", "image/jpeg")}
+        svc = PlayerService(audio=audio, metadata=FakeMetadataPort(covers=covers))
+        svc.add_files(["a.mp3"])
+        assert svc.playlist.tracks[0].cover_data == b"fake-cover-bytes"
+        assert svc.playlist.tracks[0].cover_mime == "image/jpeg"
+
+    def test_add_files_track_cover_is_none_when_metadata_has_none(self, service: PlayerService):
+        service.add_files(["a.mp3"])
+        assert service.playlist.tracks[0].cover_data is None
+        assert service.playlist.tracks[0].cover_mime is None
 
 
 class TestDurationFallback:

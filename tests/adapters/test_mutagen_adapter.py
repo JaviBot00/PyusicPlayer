@@ -57,6 +57,55 @@ class TestTagExtraction:
         assert meta.track_number == 3
 
 
+class TestCoverExtraction:
+    """extract() must populate cover_data/cover_mime inline (not just the
+    separate get_cover() method) for formats where embedded art is
+    supported: mp3 (APIC), flac (Picture), m4a (covr). Formats without
+    cover support (ogg/opus/wav/wma) must leave both fields None, not
+    raise."""
+
+    def test_mp3_extract_populates_cover_data_and_mime(self, adapter: MutagenMetadataAdapter, audio_fixtures):
+        meta = adapter.extract(str(audio_fixtures["mp3_cover"]))
+        assert meta.cover_data == b"\xff\xd8\xff\xe0FAKEJPEGDATA_FOR_TESTS_ONLY\xff\xd9"
+        assert meta.cover_mime == "image/jpeg"
+
+    def test_flac_extract_populates_cover_data_and_mime(self, adapter: MutagenMetadataAdapter, audio_fixtures):
+        meta = adapter.extract(str(audio_fixtures["flac_cover"]))
+        assert meta.cover_data == b"\x89PNG\r\n\x1a\nFAKEPNGDATA_FOR_TESTS_ONLY"
+        assert meta.cover_mime == "image/png"
+
+    def test_m4a_extract_populates_cover_data_and_mime(self, adapter: MutagenMetadataAdapter, audio_fixtures):
+        meta = adapter.extract(str(audio_fixtures["m4a_cover"]))
+        assert meta.cover_data == b"\x89PNG\r\n\x1a\nFAKEPNGDATA_FOR_TESTS_ONLY"
+        assert meta.cover_mime == "image/png"
+
+    def test_mp3_without_cover_leaves_fields_none(self, adapter: MutagenMetadataAdapter, audio_fixtures):
+        meta = adapter.extract(str(audio_fixtures["mp3"]))
+        assert meta.cover_data is None
+        assert meta.cover_mime is None
+
+    def test_flac_without_cover_leaves_fields_none(self, adapter: MutagenMetadataAdapter, audio_fixtures):
+        meta = adapter.extract(str(audio_fixtures["flac"]))
+        assert meta.cover_data is None
+        assert meta.cover_mime is None
+
+    @pytest.mark.parametrize("fmt", ["ogg", "wav"])
+    def test_formats_without_cover_support_leave_fields_none(
+        self, adapter: MutagenMetadataAdapter, audio_fixtures, fmt
+    ):
+        meta = adapter.extract(str(audio_fixtures[fmt]))
+        assert meta.cover_data is None
+        assert meta.cover_mime is None
+
+    def test_get_cover_still_returns_bytes_for_mp3(self, adapter: MutagenMetadataAdapter, audio_fixtures):
+        """Public get_cover() must keep working standalone (e.g. for a
+        library adapter that stores tracks without re-extracting full
+        metadata), sharing implementation with extract() rather than
+        diverging."""
+        cover = adapter.get_cover(str(audio_fixtures["mp3_cover"]))
+        assert cover == b"\xff\xd8\xff\xe0FAKEJPEGDATA_FOR_TESTS_ONLY\xff\xd9"
+
+
 class TestSupportsFormat:
     def test_supports_known_formats(self, adapter: MutagenMetadataAdapter):
         for ext in ("song.mp3", "song.flac", "song.ogg", "song.m4a", "song.wav", "song.wma"):

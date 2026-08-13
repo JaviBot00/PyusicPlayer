@@ -67,6 +67,7 @@ class MutagenMetadataAdapter:
             metadata.duration = mp3.info.length
             metadata.bitrate = mp3.info.bitrate
             metadata.sample_rate = mp3.info.sample_rate
+            metadata.cover_data, metadata.cover_mime = self._cover_from_mp3(mp3)
             try:
                 audio = EasyID3(file_path)
             except ID3NoHeaderError:
@@ -75,6 +76,7 @@ class MutagenMetadataAdapter:
             audio = FLAC(file_path)
             metadata.duration = audio.info.length
             metadata.sample_rate = audio.info.sample_rate
+            metadata.cover_data, metadata.cover_mime = self._cover_from_flac(audio)
         elif ext == ".opus":
             audio = OggOpus(file_path)
             metadata.duration = audio.info.length
@@ -87,6 +89,7 @@ class MutagenMetadataAdapter:
             audio = MP4(file_path)
             metadata.duration = audio.info.length
             metadata.sample_rate = audio.info.sample_rate
+            metadata.cover_data, metadata.cover_mime = self._cover_from_mp4(audio)
         else:
             # Unreachable: supports_format() already filtered the extension.
             raise ValueError(f"Unsupported format: {ext}")
@@ -98,6 +101,29 @@ class MutagenMetadataAdapter:
     def _asf_tag(audio, key: str) -> Optional[str]:
         values = audio.tags.get(key)
         return str(values[0]) if values else None
+
+    @staticmethod
+    def _cover_from_mp3(mp3) -> tuple[Optional[bytes], Optional[str]]:
+        if not mp3.tags:
+            return None, None
+        covers = mp3.tags.getall("APIC")
+        if not covers:
+            return None, None
+        return covers[0].data, covers[0].mime
+
+    @staticmethod
+    def _cover_from_flac(audio) -> tuple[Optional[bytes], Optional[str]]:
+        if not audio.pictures:
+            return None, None
+        return audio.pictures[0].data, audio.pictures[0].mime
+
+    @staticmethod
+    def _cover_from_mp4(audio) -> tuple[Optional[bytes], Optional[str]]:
+        if not audio.tags or "covr" not in audio.tags:
+            return None, None
+        cover = audio.tags["covr"][0]
+        mime = "image/png" if cover.imageformat == cover.FORMAT_PNG else "image/jpeg"
+        return bytes(cover), mime
 
     @staticmethod
     def _fill_common_tags(metadata: AudioMetadata, audio) -> None:
@@ -134,19 +160,14 @@ class MutagenMetadataAdapter:
         ext = Path(file_path).suffix.lower()
         try:
             if ext == ".mp3":
-                audio = MP3(file_path)
-                if audio.tags:
-                    covers = audio.tags.getall("APIC")
-                    if covers:
-                        return covers[0].data
+                data, _mime = self._cover_from_mp3(MP3(file_path))
+                return data
             elif ext == ".flac":
-                audio = FLAC(file_path)
-                if audio.pictures:
-                    return audio.pictures[0].data
+                data, _mime = self._cover_from_flac(FLAC(file_path))
+                return data
             elif ext == ".m4a":
-                audio = MP4(file_path)
-                if audio.tags and "covr" in audio.tags:
-                    return bytes(audio.tags["covr"][0])
+                data, _mime = self._cover_from_mp4(MP4(file_path))
+                return data
         except Exception:
             return None
         return None
