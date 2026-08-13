@@ -4,6 +4,9 @@
 pygame>=2.5.0
 mutagen>=1.47.0
 
+# Cover art rendering (decode/resize embedded APIC/covr images)
+Pillow>=10.0.0
+
 # TUI
 textual>=0.47.0
 

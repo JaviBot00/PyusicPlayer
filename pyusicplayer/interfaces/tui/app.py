@@ -15,15 +15,25 @@ from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.widgets import Footer, Header, ListItem, ListView, Label, ProgressBar, Static
 
 from ...core.models import PlaylistMode
 from ...core.ports import PlaybackState
 from ...core.ports.config import AppConfig, ConfigPort
+from ...core.ports.cover_renderer import CoverRenderMode
 from ...core.services import PlayerService
 from ...di.container import Container
+from .screens.settings_screen import SettingsScreen
+
+# Deliberate, documented exception to the "only di/container.py imports
+# concrete adapters" rule (see AGENT.md "Key Decisions" - Cover render
+# backend selection): create_cover_renderer() takes a runtime mode string
+# that can change after a settings screen edits AppConfig, but
+# Container.resolve() memoizes factory results into singletons, so routing
+# this through DI would cache a stale renderer past the first mode change.
+from ...adapters.cover_renderer.factory import create_cover_renderer
 
 SUPPORTED_EXTENSIONS = {".mp3", ".flac", ".ogg", ".opus", ".m4a", ".wav", ".wma"}
 
@@ -40,6 +50,9 @@ _REPEAT_MODE_MAP: dict[str, PlaylistMode] = {
     "all": PlaylistMode.ALL,
 }
 _PLAYLIST_MODE_MAP: dict[PlaylistMode, str] = {v: k for k, v in _REPEAT_MODE_MAP.items()}
+
+_COVER_WIDTH = 20
+_COVER_HEIGHT = 8
 
 
 def scan_music_folder(folder: Path) -> list[str]:
@@ -70,8 +83,16 @@ class PyusicPlayerApp(App):
     """Terminal music player."""
 
     CSS = """
+    #media-display {
+        height: 8;
+    }
+    #cover-art {
+        width: 22;
+        height: 8;
+        content-align: center middle;
+    }
     #now-playing {
-        height: 3;
+        height: 8;
         content-align: center middle;
         text-style: bold;
     }
@@ -110,6 +131,7 @@ class PyusicPlayerApp(App):
         Binding("l", "mode_loop_one", "Loop one"),
         Binding("L", "mode_loop_all", "Loop all"),
         Binding("r", "toggle_shuffle", "Shuffle"),
+        Binding("comma", "open_settings", "Settings"),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -120,10 +142,13 @@ class PyusicPlayerApp(App):
         self._config_adapter: ConfigPort = container.resolve(ConfigPort)
         self._added = 0
         self._playing_item: TrackListItem | None = None
+        self._cover_render_mode: str = CoverRenderMode.PLACEHOLDER  # overwritten from config in on_mount
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        yield Static("Nothing loaded", id="now-playing")
+        with Horizontal(id="media-display"):
+            yield Static("", id="cover-art")
+            yield Static("Nothing loaded", id="now-playing")
         yield Static("", id="mode-bar")
         with Vertical(id="progress-row"):
             yield ProgressBar(total=100, show_eta=False, id="progress")
@@ -139,6 +164,8 @@ class PyusicPlayerApp(App):
         self.player.volume = config.volume
         self.player.playlist.shuffle = config.shuffle
         self.player.playlist.mode = _REPEAT_MODE_MAP.get(config.repeat_mode, PlaylistMode.NONE)
+        self._cover_render_mode = config.cover_render_mode
+        self._render_cover(None)  # always visible: show placeholder before any track loads
 
         # --- Load playlist ---
         self._added = self.player.add_files(scan_music_folder(self._music_folder))
@@ -163,12 +190,14 @@ class PyusicPlayerApp(App):
             volume=self.player.volume,
             shuffle=self.player.playlist.shuffle,
             repeat_mode=_PLAYLIST_MODE_MAP.get(self.player.playlist.mode, "none"),
+            cover_render_mode=self._cover_render_mode,
         )
         self._config_adapter.save(config)
         self.player.shutdown()
 
     def _on_track_change(self, track) -> None:
         self.query_one("#now-playing", Static).update(track.display_name)
+        self._render_cover(track)
         list_view = self.query_one("#playlist-view", ListView)
         if self._playing_item is not None:
             self._playing_item.set_playing(False)
@@ -177,6 +206,19 @@ class PyusicPlayerApp(App):
                 item.set_playing(True)
                 self._playing_item = item
                 break
+
+    def _render_cover(self, track) -> None:
+        """Rebuilds the renderer on every call instead of caching one on
+        self - CoverRendererPort adapters are cheap to construct (they just
+        wrap decode/resize logic, no state), and rebuilding means a settings
+        screen changing self._cover_render_mode takes effect on the very
+        next track/refresh without needing a separate invalidation path."""
+        cover_data = track.cover_data if track else None
+        cover_mime = track.cover_mime if track else None
+        renderer = create_cover_renderer(self._cover_render_mode)
+        rendered = renderer.render(cover_data, cover_mime, _COVER_WIDTH, _COVER_HEIGHT)
+        self.cover_render_text = rendered  # exposed for tests, same pattern as self.mode_bar_text
+        self.query_one("#cover-art", Static).update(rendered)
 
     def _refresh_mode_bar(self) -> None:
         parts = []
@@ -254,6 +296,18 @@ class PyusicPlayerApp(App):
     def action_toggle_shuffle(self) -> None:
         self.player.playlist.shuffle = not self.player.playlist.shuffle
         self._refresh_mode_bar()
+
+    def action_open_settings(self) -> None:
+        self.push_screen(SettingsScreen(self._cover_render_mode), self._on_settings_closed)
+
+    def _on_settings_closed(self, mode) -> None:
+        if mode is None:
+            return  # cancelled - disk and in-memory mode both untouched
+        self._cover_render_mode = mode
+        config = self._config_adapter.load()
+        config.cover_render_mode = mode
+        self._config_adapter.save(config)
+        self._render_cover(self.player.playlist.current_track)
 
 
 def _fmt(seconds: float) -> str:

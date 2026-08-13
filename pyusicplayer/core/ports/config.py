@@ -19,6 +19,7 @@ class AppConfig:
     repeat_mode: str = "none"   # "none" | "one" | "all"
     shuffle: bool = False
     last_playlist_path: Optional[str] = None
+    cover_render_mode: str = "placeholder"  # "truecolor" | "ascii" | "placeholder" - see core/ports/cover_renderer.py::CoverRenderMode. Not validated here on purpose (see test_unknown_cover_render_mode_value_is_not_validated_here); create_cover_renderer() already defaults any unrecognized value to placeholder.
 
 
 class ConfigPort(Protocol):

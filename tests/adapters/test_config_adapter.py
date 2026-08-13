@@ -32,11 +32,13 @@ class TestLoad:
         assert config.repeat_mode == "none"
         assert config.shuffle is False
         assert config.last_playlist_path is None
+        assert config.cover_render_mode == "placeholder"
 
     def test_loads_saved_values(self, tmp_path):
         adapter = make_adapter(tmp_path)
         original = AppConfig(volume=0.5, repeat_mode="all", shuffle=True,
-                             last_playlist_path="/music/rock.m3u")
+                             last_playlist_path="/music/rock.m3u",
+                             cover_render_mode="ascii")
         adapter.save(original)
 
         loaded = adapter.load()
@@ -44,6 +46,20 @@ class TestLoad:
         assert loaded.repeat_mode == "all"
         assert loaded.shuffle is True
         assert loaded.last_playlist_path == "/music/rock.m3u"
+        assert loaded.cover_render_mode == "ascii"
+
+    def test_unknown_cover_render_mode_value_is_not_validated_here(self, tmp_path):
+        """ConfigPort is a dumb persistence layer - it does not know which
+        render modes are valid. That validation already lives in
+        adapters/cover_renderer/factory.py::create_cover_renderer, which
+        defaults any unrecognized mode string to placeholder. Duplicating
+        that check here would just be two sources of truth to keep in sync.
+        """
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"cover_render_mode": "bogus_mode"}))
+        adapter = JsonConfigAdapter(config_path=config_file)
+        config = adapter.load()
+        assert config.cover_render_mode == "bogus_mode"
 
     def test_unknown_keys_in_file_are_ignored(self, tmp_path):
         """Forward-compat: future keys must not crash older code."""
